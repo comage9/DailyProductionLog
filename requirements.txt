@@ -1,0 +1,18 @@
+fastapi
+uvicorn[standard]
+pandas
+prophet
+python-dotenv
+apscheduler
+requests
+statsmodels
+matplotlib
+seaborn
+# tbats  # removed due to build issues
+scikit-learn
+xgboost
+lightgbm
+schedule
+beautifulsoup4
+selenium
+webdriver-manager
