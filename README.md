@@ -22,268 +22,252 @@
 **1. 주요 진행 상황**
 *   **알림창 자동 처리**: 스크래핑 중 발생하는 예기치 않은 알림창(예: "데이터 처리에 실패했습니다. 다시 시도해 주세요.")을 감지하고 자동으로 닫는 로직을 구현하여 안정성을 높였습니다.
 *   **CSS 선택자 검토 및 수정 시도**: 상품명(`h2.prod-buy-header__title`) 및 가격(`.prod-buy-price .total-price strong`) 등 주요 정보 추출을 위한 CSS 선택자를 지속적으로 검토하고 수정 시도하고 있습니다.
-*   **대기 시간 증가**: 동적 컨텐츠 로딩을 위해 `WebDriverWait`의 대기 시간을 30초로 늘려, 페이지 요소가 나타날 시간을 충분히 확보하고자 했습니다.
-*   **디버깅을 위한 상세 로깅 추가**:
-    *   `TimeoutException` 또는 `UnexpectedAlertPresentException`과 같은 주요 예외 발생 시, 해당 시점의 페이지 소스 일부를 로깅하여 원인 분석 자료로 활용하고 있습니다.
-    *   상품명 요소 탐색 직전에 현재 페이지 소스의 일부를 로깅하는 기능을 추가하여, 요소 미발견 시점의 DOM(Document Object Model) 상태를 파악할 수 있도록 개선했습니다. (현재 이 로그가 터미널에 정상적으로 출력되는지 확인하는 과정에 있습니다.)
+*   **대기 시간 증가**: 동적 컨텐츠 로딩을 위해 `WebDriverWait`의 대기 시간을 30초로 늘려, 페이지 요소가 나타날 시간을 충분히 확보했습니다.
+*   **예외 처리 강화**: `try-except` 블록을 사용하여 특정 요소(예: 리뷰, Q&A)가 없는 경우에도 스크래핑이 중단되지 않고 다음 단계로 진행하도록 개선했습니다.
+*   **리뷰/Q&A 수집 로직 개선**: "더보기" 버튼을 클릭하여 모든 리뷰와 Q&A를 가져오는 로직을 구현 중입니다. 현재 일부 상품에서 모든 내용을 가져오지 못하는 경우가 있어 디버깅 중입니다.
+*   **데이터 저장**: 수집된 데이터는 CSV 파일로 저장되며, 향후 데이터베이스 연동을 고려하고 있습니다.
 
-**2. 현재 주요 문제점 및 해결 과제**
-*   **상품명/가격 추출의 지속적 실패**: 가장 큰 문제점으로, 상품명과 가격 정보 추출 시 `TimeoutException`이 계속 발생하고 있습니다. 이는 현재 사용 중인 CSS 선택자가 실제 쿠팡 페이지의 HTML 구조와 일치하지 않거나, 페이지가 완전히 로드되지 않은 상태에서 요소 탐색을 시도하기 때문일 가능성이 높습니다.
-*   **핵심 정보 확보의 어려움**: 위의 문제로 인해, 스크래퍼의 핵심 목표인 상품명, 가격, 이미지 등의 주요 정보를 안정적으로 가져오지 못하고 있습니다.
-*   **추가된 디버깅 로그 미출력**: 상품명 탐색 직전의 페이지 소스를 로깅하도록 코드를 수정했음에도 불구하고, 최근 테스트 실행 시 해당 로그가 터미널에 나타나지 않는 현상이 관찰되었습니다. 이 문제의 원인을 파악하여 디버깅 효율을 높여야 합니다.
+**2. 당면 과제 및 해결 방안**
+*   **선택자 불안정성**: 쿠팡 웹사이트 구조 변경 시 CSS 선택자가 무효화될 수 있습니다.
+    *   **해결 방안**: 좀 더 견고한 선택자(예: ID, 복합 선택자) 사용, XPath 사용 고려, 정기적인 선택자 유효성 검사 및 업데이트 자동화 스크립트 개발.
+*   **동적 컨텐츠 로딩 지연**: 일부 상품 페이지에서 특정 요소(특히 리뷰, Q&A) 로딩이 매우 느리거나 실패하는 경우가 있습니다.
+    *   **해결 방안**: `WebDriverWait`와 `expected_conditions` 조합 최적화, 필요시 `time.sleep()` 추가, JavaScript 실행을 통한 직접 데이터 추출 고려.
+*   **IP 차단 가능성**: 빈번한 요청 시 IP가 차단될 수 있습니다.
+    *   **해결 방안**: 요청 간 랜덤 지연 시간 추가, 프록시 서버 사용, User-Agent 변경. (현재는 구현되지 않음)
+*   **"더보기" 버튼 처리**: 모든 리뷰/Q&A를 가져오기 위한 "더보기" 버튼 클릭 로직이 일부 상품에서 완벽하게 동작하지 않습니다.
+    *   **해결 방안**: 버튼 상태(활성화/비활성화) 정확히 감지, 클릭 후 컨텐츠 로딩 대기 시간 충분히 부여, JavaScript 직접 실행으로 버튼 클릭 시도.
+*   **로그인 필요 컨텐츠**: 일부 정보는 로그인해야 접근 가능할 수 있습니다. (현재는 로그인 없이 접근 가능한 정보만 수집)
+    *   **해결 방안**: 필요시 로그인 기능 구현 (쿠키 사용 등), 또는 수집 범위 제한.
+*   **오류 로깅 및 모니터링**: 스크래핑 실패 시 원인 파악을 위한 상세 로깅 및 알림 시스템이 부족합니다.
+    *   **해결 방안**: `logging` 모듈을 사용하여 단계별 로그 기록, 예외 발생 시 상세 정보(URL, 시간, 에러 메시지, 스크린샷 등) 기록, 주요 오류 발생 시 이메일/슬랙 알림 기능 추가.
 
-**3. 향후 진행 방향**
-*   **로그 분석 및 선택자 정밀 검증**: 먼저, 추가된 디버깅 로그(상품명 탐색 직전 페이지 소스)가 정상적으로 출력되도록 문제를 해결합니다. 이후, 확보된 로그를 바탕으로 실제 HTML 구조를 면밀히 분석하여 현재 CSS 선택자들의 유효성을 철저히 재검증하고, 필요시 더욱 정확하고 견고한 선택자로 수정합니다.
-*   **동적 컨텐츠 로딩 전략 개선**: 쿠팡 페이지의 JavaScript 실행, AJAX 호출 등 동적 컨텐츠 로딩 메커니즘을 심층적으로 분석합니다. 특정 사용자 인터랙션(스크롤, 클릭 등)이나 추가적인 대기 조건이 필요한지 확인하고, 스크래핑 로직에 반영합니다.
-*   **예외 처리 로직 강화**: 네트워크 불안정, 예기치 않은 페이지 구조 변경 등 다양한 예외 상황에 대해 스크래퍼가 더욱 유연하고 안정적으로 대응할 수 있도록 예외 처리 로직을 전반적으로 보강합니다.
-*   **이미지, 리뷰, Q&A 스크래핑 로직 구현**: 상품명과 가격 추출 문제가 안정화되는 대로, 이미지 URL, 사용자 리뷰, Q&A 데이터 등 나머지 중요 정보들에 대한 스크래핑 로직 구현을 본격적으로 진행할 예정입니다.
+**3. 향후 개선 계획**
+*   스크래핑 주기 설정 및 자동 실행 (APScheduler 등 활용)
+*   수집 데이터 DB 저장 및 API 연동
+*   스크래핑 현황 대시보드 제공
 
 ---
 
 ## 기술 스택
-- **백엔드**: Python, FastAPI, pandas, sqlite3, APScheduler, BeautifulSoup4
-- **프론트엔드**: React, TypeScript, Chart.js, axios
-- **AI/예측**: Prophet, scikit-learn, (옵션) Ollama LLM
-- **데이터 소스**: Google Sheets (CSV API)
+
+**백엔드**:
+- Python 3.10+
+- FastAPI: 고성능 API 프레임워크
+- Pandas: 데이터 분석 및 처리
+- SQLite3: 경량 데이터베이스 (vf.db, your.db)
+- APScheduler: 백그라운드 작업 스케줄링
+- Prophet (Meta): 시계열 데이터 예측
+- Uvicorn: ASGI 서버
+
+**프론트엔드**:
+- React 18+
+- TypeScript
+- Vite: 차세대 프론트엔드 빌드 도구
+- Chart.js: 인터랙티브 차트 라이브러리
+- Axios: HTTP 클라이언트
+
+**데이터 소스**:
+- Google Sheets API (CSV 다운로드 방식)
+- 쿠팡 웹사이트 (스크래핑)
 
 ---
 
-## 폴더 구조
+## 프로젝트 구조
+
 ```
-├── app/                # FastAPI 백엔드 및 데이터 처리
-│   ├── scrapers/       # 웹 스크래핑 모듈
-│   │   └── coupan_scraper.py # 쿠팡 스크래퍼
-│   └── main.py         # API, 데이터 동기화, 분석 로직
-├── frontend/           # React 프론트엔드
-│   └── src/            # 주요 컴포넌트, 스타일 등
-├── forecast.py         # 예측 관련 함수
-├── requirements.txt    # Python 의존성
-├── README.md           # 프로젝트 설명 및 안내
-└── ...
+analytics-dashboard-main/
+├── app/                      # FastAPI 백엔드 애플리케이션
+│   ├── __init__.py
+│   ├── analysis.py           # 데이터 분석 로직
+│   ├── background.py         # 백그라운드 작업 (APScheduler)
+│   ├── cache.py              # 캐시 관련 유틸리티
+│   ├── decomposition.py      # 시계열 분해 로직
+│   ├── eda.py                # 탐색적 데이터 분석 API
+│   ├── main.py               # FastAPI 메인 라우터, 핵심 API
+│   ├── scrapers/             # 웹 스크래퍼
+│   │   └── coupan_scraper.py # 쿠팡 상품 정보 스크래퍼
+│   └── ... (기타 유틸리티)
+├── frontend/                 # React 프론트엔드 애플리케이션
+│   ├── public/
+│   ├── src/
+│   │   ├── components/       # React 컴포넌트
+│   │   ├── App.tsx           # 메인 애플리케이션 컴포넌트
+│   │   └── main.tsx          # React 애플리케이션 진입점
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.ts
+├── data/                     # (주의) 실제 데이터 파일은 .gitignore 처리됨
+│   ├── sample_data.csv
+│   └── ...
+├── reports/                  # (주의) 생성된 리포트 파일은 .gitignore 처리됨
+│   └── ...
+├── tests/                    # 테스트 코드 (pytest)
+│   └── ...
+├── .env.example              # 환경변수 설정 예시
+├── .gitignore                # Git 무시 파일 목록
+├── Dockerfile                # Docker 빌드 설정 (선택 사항)
+├── requirements.txt          # Python 의존성 목록
+├── README.md                 # 프로젝트 설명 파일
+└── run.py                    # FastAPI 애플리케이션 실행 스크립트
 ```
 
 ---
 
-## 설치 및 실행 방법
-1. **Python 패키지 설치**
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. **프론트엔드 설치/실행 (개발 서버: 포트 3000)**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev -- --port 3000
-   ```
-3. **백엔드 실행 (개발 서버: 포트 8001)**
-   ```bash
-   uvicorn app.main:app --reload --port 8001
-   ```
-4. **웹 브라우저에서 접속**
-   - 프론트엔드 개발 서버: http://localhost:3000
-   - 백엔드 API 문서: http://localhost:8001/docs
+## 설치 및 실행
 
-### 주요 API 엔드포인트
-- `/api/overview`: 데이터 개요 및 요약
-- `/api/trend`: 기간별 판매 트렌드 분석
-- `/api/forecast`: 판매량 예측
-- `/api/report/detailed`: 상세 판매 분석 보고서 (JSON 형식, 차트 데이터 포함)
-- `/api/report/shipment`: 출고 데이터 기반 AI 분석 보고서 (Markdown 형식)
-- `/api/reports/coupan/bono_house`: 쿠팡 '보노 하우스' 상품 리포트 (스크랩된 데이터)
-- `/api/eda/monthly_summary`: 월별 판매 요약
-- `/api/eda/weekly_summary`: 주간 판매 요약
-- `/api/insight`: (현재 목업) AI 기반 데이터 분석 및 질의응답
-- `/api/refresh_data`: 원격 CSV 데이터베이스 강제 동기화
-- *더 많은 엔드포인트는 `http://localhost:8001/docs`에서 확인 가능합니다.*
+### 1. 사전 준비
+- Python 3.10 이상 설치
+- Node.js 및 npm (또는 yarn) 설치 (프론트엔드 빌드 시 필요)
+- Google Cloud Platform 프로젝트 생성 및 Google Sheets API 활성화
+- Google 서비스 계정 생성 및 JSON 키 파일 다운로드 (`google_credentials.json` - 프로젝트 루트에 배치)
 
-### 개발용 기능: 접속 로그 뷰어
-- **접속 로그 엔드포인트**: `/access.log` (개발 환경 전용)
-- **프론트엔드 탭**: "접속 로그" 탭을 클릭하여 로그 파일 업로드, IP별 이름 매핑 및 시간별 요약 확인
-- **IP 매핑 저장**: 입력한 별칭은 `localStorage`에 저장되어 새로고침 시에도 유지됩니다
+### 2. 백엔드 설정 및 실행
+1.  **가상환경 생성 및 활성화**:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # Linux/macOS
+    .\venv\Scripts\activate    # Windows
+    ```
+2.  **Python 의존성 설치**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **환경변수 설정**: `.env.example` 파일을 복사하여 `.env` 파일 생성 후, 내부 값들을 실제 환경에 맞게 수정합니다. (특히 `GOOGLE_SHEET_ID`, `DB_PATH` 등)
+4.  **데이터베이스 초기화** (최초 실행 시): `vf.db` 파일이 자동으로 생성됩니다. 필요시 `app.db_utils`의 스키마 생성 함수를 직접 실행할 수 있습니다.
+5.  **FastAPI 서버 실행**:
+    ```bash
+    python run.py
+    ```
+    또는 Uvicorn 직접 실행:
+    ```bash
+    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    ```
+    API 문서는 `http://localhost:8000/docs` 에서 확인 가능합니다.
 
-## 테스트 실행
-- **백엔드 유닛 테스트**:
+### 3. 프론트엔드 설정 및 실행
+1.  **프론트엔드 디렉토리로 이동**:
+    ```bash
+    cd frontend
+    ```
+2.  **Node.js 의존성 설치**:
+    ```bash
+    npm install
+    # 또는 yarn install
+    ```
+3.  **프론트엔드 개발 서버 실행**:
+    ```bash
+    npm run dev
+    # 또는 yarn dev
+    ```
+    애플리케이션은 `http://localhost:5173` (또는 다른 포트)에서 실행됩니다.
+
+### 4. 프론트엔드 빌드 (배포용)
+1.  프론트엔드 디렉토리(`frontend/`)에서 다음 명령 실행:
+    ```bash
+    npm run build
+    # 또는 yarn build
+    ```
+2.  빌드 결과물은 `frontend/dist` 디렉토리에 생성됩니다. FastAPI는 이 디렉토리의 정적 파일을 자동으로 서빙하도록 설정되어 있습니다 (`app/main.py`의 `StaticFiles` 마운트 부분 참조).
+
+---
+
+## 테스트
+
+프로젝트 루트 디렉토리에서 다음 명령으로 `pytest` 실행:
+```bash
+pytest
+```
+- 특정 테스트 파일 실행: `pytest tests/test_api.py`
+- 특정 테스트 함수 실행: `pytest tests/test_api.py::test_get_some_data`
+
+---
+
+## 데이터베이스 관리
+
+- 현재 SQLite 데이터베이스 파일(`vf.db`, `your.db`)은 `.gitignore`에 의해 버전 관리에서 제외됩니다.
+- 데이터베이스 스키마 변경이나 마이그레이션은 수동으로 관리해야 합니다. (Alembic 등 마이그레이션 도구 도입 고려 가능)
+- 데이터 백업은 별도로 관리해야 합니다.
+
+---
+
+## 깃허브(GitHub) 연동 가이드
+
+### 1. 개인 액세스 토큰(PAT) 생성
+- 깃허브 > Settings > Developer settings > Personal access tokens > Tokens (classic)
+- "Generate new token (classic)" 선택
+- Note: "DailyProductionLog Access" 등
+- Expiration: (적절히 선택, 예: 90 days)
+- Select scopes:
+    - `repo` (Full control of private repositories) 필수
+- "Generate token" 클릭 후 생성된 토큰 복사 (다시 볼 수 없으므로 안전한 곳에 보관)
+
+### 중요: `analytics-dashboard` 리포지토리 (구 버전 관리용)
+이 프로젝트의 이전 버전 또는 다른 목적으로 사용되던 `https://github.com/comage9/analytics-dashboard.git` 리포지토리가 존재할 수 있습니다.
+**현재 주 개발 및 코드 관리는 `DailyProductionLog` 리포지토리에서 이루어집니다.** (아래 섹션 참조)
+
+만약 `analytics-dashboard` 리포지토리에 특정 내용을 업로드해야 한다면, 해당 프로젝트 폴더로 이동하여 아래와 유사한 절차를 따르되, 원격 저장소 URL을 정확히 지정해야 합니다.
+
+```bash
+# 예시: analytics-dashboard 리포지토리로 푸시하는 경우
+# cd /path/to/your/analytics-dashboard/project
+# git remote set-url origin https://github.com/comage9/analytics-dashboard.git
+# git add .
+# git commit -m "커밋 메시지"
+# git push origin main # 또는 해당 브랜치명
+```
+토큰 인증 방식은 동일하게 적용됩니다.
+
+---
+
+## 1. 깃허브(GitHub)에 프로젝트 업로드(푸시)하는 방법 (일반적인 경우)
+
+### 1) 로컬 프로젝트 폴더를 Git 저장소로 만들기 (이미 되어 있다면 생략)
+```bash
+git init
+```
+
+### 2) 원격 저장소(origin) 연결 (아직 안되어 있다면)
+- **HTTPS 방식 (권장: 토큰 사용)**
   ```bash
-  pytest test_api.py test_db_forecast.py test_forecast.py test_range_forecast.py
+  git remote add origin https://github.com/사용자이름/저장소이름.git
   ```
-- **프론트엔드 테스트**:
+  예: `git remote add origin https://github.com/comage9/DailyProductionLog.git`
+
+- **SSH 방식 (SSH 키 설정 필요)**
   ```bash
-  cd frontend
-  npm test
+  git remote add origin git@github.com:사용자이름/저장소이름.git
   ```
+  예: `git remote add origin git@github.com:comage9/DailyProductionLog.git`
 
-## 환경변수 설정
-- 프로젝트 루트에 `.env` 파일 생성 후 다음 변수 설정:
-  ```dotenv
-  DB_PATH=your_database.db
-  TABLE_NAME="vf 출고 수량 ocr google 보고서 - 일별 출고 수량 (4)"
-  ```
+### 3) 변경사항 스테이징 및 커밋
+```bash
+git add .                 # 모든 변경사항 스테이징
+# 또는 git add 특정파일   # 특정 파일만 스테이징
+git commit -m "여기에 커밋 메시지 작성"
+```
 
-## 라이선스
-- 본 프로젝트는 MIT 라이선스를 따릅니다.
+### 4) 원격 저장소로 푸시
+```bash
+git push -u origin main   # 'main'은 현재 브랜치 이름 (master일 수도 있음)
+```
+- `-u` 옵션은 한 번만 사용하면 다음부터 `git push`만으로 해당 브랜치에 푸시 가능
+- **HTTPS 방식 사용 시**: 사용자 이름과 비밀번호(개인 액세스 토큰) 입력 요청
+   - 사용자 이름: GitHub 사용자 이름
+   - 비밀번호: 위에서 생성한 개인 액세스 토큰(PAT) 붙여넣기 (입력 시 화면에 표시되지 않음)
 
----
+### 5) 기존 원격 저장소 URL 변경 (필요시)
+```bash
+git remote set-url origin 새로운_저장소_URL
+```
+예: `git remote set-url origin https://github.com/comage9/NewRepository.git`
 
-## 실행 파일 패키징 (프리징)
-
-서버 및 프론트엔드를 단일 실행 파일(.exe)로 묶어 배포하는 방법입니다:
-
-1. **release_build 디렉터리 생성 및 파일 복사**
-   ```bash
-   mkdir release_build
-   robocopy . release_build /E /XD .git release_build venv
-   ```
-2. **번들링 디렉터리로 이동**
-   ```bash
-   cd release_build
-   ```
-3. **PyInstaller로 실행 파일 생성**
-   ```bash
-   pyinstaller --clean --onefile \
-     --collect-all prophet \
-     --collect-all holidays \
-     --hidden-import holidays.countries \
-     --add-data "frontend/dist;frontend/dist" \
-     run.py
-   ```
-4. **생성된 실행 파일 실행**
-   ```bash
-   dist/run.exe
-   ```
-5. **브라우저 접속 (배포 서버 기본 포트: 5173)**
-   ```bash
-   http://localhost:5173
-   ```
-
-### 배포 서버 포트 변경
-패키징된 EXE는 기본적으로 5173번 포트에서 실행됩니다. 다른 포트를 사용하려면 `release_build/app/main.py` 파일의 `uvicorn.run(app, host="0.0.0.0", port=5173)` 부분을 원하는 포트로 수정한 뒤, 다시 패키징하세요.
-
----
-
-## 데이터 흐름 및 동기화 구조
-- **구글 시트 → CSV 다운로드 → pandas DataFrame → sqlite3 DB upsert**
-- 리프레시 시 변경분만 upsert하여 속도 최적화
-- DB → API → 프론트엔드로 데이터 전달 및 시각화
-
----
-
-## 주요 특징 및 장점
-- **증분 동기화**: 전체 데이터가 아닌 변경분만 반영하여 빠른 리프레시
-- **모듈화**: 백엔드/프론트엔드 분리, 유지보수 용이
-- **확장성**: AI 분석, 외부 BI 연동 등 기능 확장 가능
-- **실시간성**: 구글 시트 데이터가 변경되면 빠르게 반영
-- **사용자 친화적 UI**: 현대적 대시보드 스타일, 다양한 시각화 제공
-
----
-
-## 활용 예시
-- 물류/유통/제조사의 출고/판매 실적 모니터링
-- 실시간 트렌드 및 예측 기반 의사결정 지원
-- AI 기반 심층 분석 보고서 자동화(옵션)
-
----
-
-## 향후 개선 사항
-아래는 프로젝트의 성능, 예측 정밀도 및 안정성을 향상시키기 위한 주요 개선 항목입니다.
-
-1. 백엔드 최적화
-   - 데이터 파이프라인 최적화
-     * 전체 CSV/DB 재처리 대신 증분(delta)만 처리하도록 로직 개선
-     * APScheduler 작업을 하루치·시간치 업데이트로 분리 및 캐싱 적용
-   - Pandas 벡터화 및 메모리 절감
-     * 반복문 제거, `groupby`·`merge` 등 벡터 연산 활용
-     * 카테고리(dtype='category') 및 다운캐스팅(downcast='integer') 적용
-   - 데이터베이스 튜닝
-     * 자주 조회/업서트하는 `날짜`, `hour` 컬럼에 복합 인덱스 생성
-     * PRAGMA 설정, `VACUUM` 주기적 실행
-     * SQLite → PostgreSQL/MySQL 교체 및 커넥션 풀링 고려
-   - API 서버 최적화
-     * FastAPI 비동기 핸들러(async) 적용, Uvicorn/Gunicorn 멀티 워커 기동
-     * GZIP 압축, `Cache-Control` 헤더 적용
-     * Redis 또는 in-memory LRU 캐시로 중복 쿼리 방지
-
-2. 예측 모델 정밀도·속도 개선
-   - 시계열 특화 라이브러리(Darts, Prophet) 도입 및 하이퍼파라미터 튜닝
-   - Gradient Boosting(LightGBM)·GPU 활용, Numba/Cython 경량화
-   - 예측 결과 모니터링 및 자동 재학습
-
-3. 프론트엔드 성능·안정성
-   - Vite 코드 분할 및 동적 `import()` 적용
-   - CDN 또는 ESM 트리 쉐이킹으로 Chart.js 최적화
-   - React `memo`, `useMemo`, `useCallback`으로 렌더링 제어
-   - 가상 스크롤링(react-virtualized)으로 대용량 테이블 처리
-
-4. 인프라·배포·테스트 자동화
-   - Docker + GitHub Actions 기반 CI/CD 구축
-   - Production: Uvicorn+Gunicorn, Nginx 리버스 프록시, HTTPS 설정
-   - Sentry/Prometheus + Grafana 모니터링
-   - pytest + FastAPI TestClient, Jest + Testing Library 테스트 커버리지 확보
-
-### 1. 백엔드 최적화 심층 계획
-아래는 1번 백엔드 최적화를 단계별로 수행하기 위한 상세 계획입니다.
-
-1.1. 증분 데이터 처리 설계 및 구현
-- 메타데이터 테이블(`last_update`) 생성: 마지막 처리한 날짜/시간 기록
-- CSV/DB 처리 로직 수정: 메타데이터 기반으로 신규 레코드만 추출 및 upsert
-
-1.2. 스케줄러 최적화
-- APScheduler 작업 분리: daily_job, hourly_job으로 역할 분리
-- 병렬 실행 지원: ThreadPoolExecutor/ProcessPoolExecutor 활용
-
-1.3. Pandas 최적화 적용
-- 기존 `melt`-기반 로직 리팩토링: `wide_to_long` 등 고성능 함수 도입
-- 불필요 복사본 제거, `SettingWithCopyWarning` 해결
-
-1.4. 데이터 타입 및 메모리 최적화
-- 주요 컬럼에 `categorical` 타입 적용
-- `pd.to_numeric(downcast='integer')` 활용 데이터 크기 축소
-
-1.5. 데이터베이스 인덱스 및 PRAGMA 튜닝
-- SQL 스크립트로 인덱스 생성(`CREATE INDEX IF NOT EXISTS idx_date_hour ON realtime(date, hour)`)
-- `PRAGMA synchronous = NORMAL` 등 쓰기 성능 튜닝
-
-1.6. API 서버 비동기 및 캐시
-- FastAPI 핸들러 `async def`로 변경
-- `fastapi-cache` 또는 `cachetools.LRUCache` 적용
-
-1.7. 모니터링 및 검증
-- `cProfile`·`pyinstrument`로 처리 시간 프로파일링
-- 주요 API 응답 시간 · DB 쿼리 시간 로깅 및 분석
-
----
-
-## 유지보수 및 확장 가이드
-- **구글 시트 구조 변경 시**: app/main.py의 컬럼 매핑/키 조정 필요
-- **AI 분석 재활성화**: /api/insight 엔드포인트 주석 해제 및 LLM 서버 준비
-- **DB 교체**: sqlite3 → MySQL/PostgreSQL 등으로 확장 가능
-- **프론트엔드 커스터마이즈**: src/components 내 컴포넌트 수정
-
----
-
-## 기여 방법
-1. 이슈 등록 또는 Pull Request 제출
-2. 주요 변경 시 README, 주석, 예제 코드 보강 권장
-3. 문의: comage9@gmail.com
-
----
-
-# Analytics Dashboard 프로젝트 깃허브 업로드 안내
-
-이 문서는 **다른 컴퓨터에서 이 프로젝트를 깃허브에 업로드(푸시)하는 방법**과 필요한 준비 사항을 안내합니다.
-
----
-
-## 1. 사전 준비
-
-1. **Git 설치**
-   - [Git 공식 다운로드](https://git-scm.com/downloads)에서 운영체제에 맞게 설치
-
-2. **깃허브 계정**
-   - [GitHub](https://github.com/)에서 계정 생성 및 로그인
-
-3. **깃허브 Personal Access Token(토큰) 준비**
-   - [토큰 생성 가이드](https://docs.github.com/ko/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
-   - 토큰은 비밀번호 대신 사용됨 (권장: repo 권한 포함)
+### 6) 강제 푸시 (주의: 원격 저장소의 내용을 덮어쓰므로 신중히 사용)
+로컬 저장소의 내용으로 원격 저장소를 강제로 덮어쓰려면:
+```bash
+git push -f origin main
+```
+- **경고**: 팀원과 협업 시에는 절대 사용하지 마세요. 개인 프로젝트의 히스토리 정리 등 특별한 경우에만 사용합니다.
+- HTTPS 방식 사용 시 토큰 인증 필요 (위와 동일)
 
 ---
 
@@ -356,3 +340,65 @@ pyinstaller --clean --onefile --collect-all prophet \
   --hidden-import holidays.countries \
   --add-data "frontend/dist;frontend/dist" run.py
 ``` 
+
+---
+
+## 5. 현재 GitHub 리포지토리 (`DailyProductionLog`) 관리
+
+이 프로젝트의 현재 주 개발 리포지토리는 `https://github.com/comage9/DailyProductionLog.git` 입니다.
+이 리포지토리에는 데이터 파일, 데이터베이스 파일, 빌드 아티팩트 (`dist/`, `build/`), `node_modules`, `__pycache__`, 백업 파일 (`*.bak`), 캐시 파일 (`cache/`) 등 불필요한 대용량 파일 및 디렉토리를 제외한 순수 코드베이스만 관리됩니다.
+
+**주요 `.gitignore` 설정:**
+```
+venv/
+*.db
+*.sqlite
+*.sqlite3
+reports/
+release_build/
+access.log
+**/__pycache__/
+*.pyc
+*.log
+*.DS_Store
+**/node_modules/
+build/
+dist/
+frontend/dist/
+*.zip
+*.bak
+cache/
+backup/
+```
+
+**업로드 과정 요약 (참고용):**
+1.  `DailyProductionLog` 리포지토리를 임시 폴더에 복제.
+2.  기존 리포지토리 내용 삭제 (새 커밋으로 덮어쓰기 준비).
+3.  현재 `analytics-dashboard-main` 프로젝트의 전체 내용을 임시 폴더에 복사.
+4.  `.gitignore` 파일을 신규 생성/수정하여 불필요한 파일 및 디렉토리 제외 패턴 명시.
+5.  여러 차례의 파일 삭제, `.gitignore` 수정, `git commit --amend`를 통해 커밋 정제.
+6.  최종 정리된 코드베이스를 `DailyProductionLog`의 `main` 브랜치로 강제 푸시 (`git push origin main --force`).
+
+**향후 이 프로젝트의 변경사항은 `e:\python\analytics-dashboard-main` 디렉토리에서 작업 후, 다음 명령어를 사용하여 `DailyProductionLog` 리포지토리로 푸시합니다:**
+
+1.  프로젝트 루트 디렉토리 (`e:\python\analytics-dashboard-main`)로 이동합니다.
+2.  원격 저장소 설정 확인 (현재 `https://github.com/comage9/DailyProductionLog.git`로 설정되어 있어야 함):
+    ```bash
+    git remote -v 
+    ```
+    만약 다르게 설정되어 있다면, 다음 명령으로 URL을 업데이트합니다:
+    ```bash
+    git remote set-url origin https://github.com/comage9/DailyProductionLog.git 
+    ```
+3.  변경사항 스테이징 및 커밋:
+    ```bash
+    git add .
+    git commit -m "커밋 메시지"
+    ```
+4.  `main` 브랜치로 푸시:
+    ```bash
+    git push origin main
+    ```
+    (일반적인 작업 흐름에서는 `--force`를 사용하지 않습니다. 히스토리 충돌 시에는 원인을 파악하고 rebase 또는 merge를 고려해야 합니다.)
+
+---
