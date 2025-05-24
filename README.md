@@ -402,3 +402,34 @@ backup/
     (일반적인 작업 흐름에서는 `--force`를 사용하지 않습니다. 히스토리 충돌 시에는 원인을 파악하고 rebase 또는 merge를 고려해야 합니다.)
 
 ---
+
+---
+
+## 6. Windsurf (Cascade) 설정 백업 및 이전 가이드
+
+Windsurf (Cascade)의 전역 규칙, 작업 공간 규칙, 메모리 및 일부 MCP 서버 설정을 다른 컴퓨터로 이전하거나 백업하는 방법입니다.
+
+1.  **Codeium/Windsurf 설치 (새 컴퓨터)**:
+    *   새 컴퓨터에 현재 사용하고 계신 버전과 동일한 Codeium 및 Windsurf를 설치합니다.
+
+2.  **설정 및 메모리 폴더 복사 (핵심 단계)**:
+    *   **기존 컴퓨터**에서 다음 디렉토리의 **전체 내용**을 복사합니다:
+        *   `C:\Users\<사용자 이름>\.codeium\windsurf\memories\`
+        *   (예: `C:\Users\kis\.codeium\windsurf\memories\`)
+    *   이 `memories` 폴더에는 전역 규칙 (`global_rules.md`), 작업 공간별 규칙 파일, 그리고 생성된 모든 메모리 파일들이 포함되어 있습니다.
+    *   **새 컴퓨터**의 동일한 위치 (`C:\Users\<새 컴퓨터 사용자 이름>\.codeium\windsurf\memories\`)에 복사한 `memories` 폴더 전체를 붙여넣습니다.
+    *   만약 `.codeium` 또는 하위 폴더가 없다면, Windsurf를 한 번 실행하여 폴더가 생성되도록 하거나 수동으로 생성할 수 있습니다.
+
+3.  **프로젝트 작업 공간 이전**:
+    *   현재 작업 중인 프로젝트 폴더(예: `e:\python\analytics-dashboard-main`) 전체를 새 컴퓨터의 원하는 위치로 복사합니다.
+    *   새 컴퓨터에서 Windsurf를 통해 해당 작업 공간을 열면, 2단계에서 이전한 메모리 덕분에 작업 공간 규칙이 자동으로 적용됩니다.
+
+4.  **`desktop_commander` (mcp2) 서버 설정 적용 (새 컴퓨터에서)**:
+    *   `desktop_commander` (mcp2) 서버의 설정(예: `blockedCommands`, `defaultShell`, `allowedDirectories`)은 필요에 따라 새 컴퓨터에서 재현합니다.
+    *   Cascade에게 요청하여 `mcp2_get_config`로 현재 설정을 확인하고, `mcp2_set_config_value`로 새 컴퓨터에 동일하게 설정할 수 있습니다.
+    *   **`allowedDirectories` 설정 주의**: 이 설정을 빈 배열 `[]`로 하면 Windsurf가 컴퓨터의 모든 파일 시스템에 접근할 수 있게 됩니다. 보안상 위험할 수 있으므로, 필요한 최소한의 디렉토리만 허용하는 것이 안전합니다.
+
+**참고: 개인 설정 백업 (예시)**
+사용자께서는 `C:\Users\kis\.codeium\windsurf\memories\` 폴더의 내용을 개인 GitHub 리포지토리(예: `git@github.com:comage9/coin.git`의 `windsurf_settings` 폴더)에 주기적으로 백업하여 관리하고 계십니다. 이 방법은 개인 설정을 안전하게 보관하고 여러 환경에서 일관성을 유지하는 좋은 전략입니다.
+
+---
