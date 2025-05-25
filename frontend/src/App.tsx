@@ -245,20 +245,29 @@ const App = (): ReactElement => {
 
   // Fetch daily AI report summary when page is ai-report or date changes
   useEffect(() => {
-    if (page === 'ai-report') {
-      // The following API call for daily summary is now effectively replaced by the "조회" button
-      // which calls /api/report/shipment. If an initial summary is desired on page load
-      // without clicking "조회", this logic might need to be revisited.
-      // For now, we disable it to avoid conflicts and rely on the button.
-      //
-      // axios.get(`/api/insights/${reportDate}`)
-      //   .then(res => setDailySummary(res.data.summary || ''))
-      //   .catch(err => {
-      //     console.error('Fetch daily summary error:', err);
-      //     setDailySummary('');
-      //   });
+    if (page === 'ai-report' && reportDate) {
+      setAiLoading(true);
+      setDailySummary('AI 요약 로딩 중...'); 
+      axios.get(`/api/insights/${reportDate}`)
+        .then(res => {
+          setDailySummary(res.data.summary || '해당 날짜에 대한 요약이 없습니다.');
+        })
+        .catch(err => {
+          console.error('Fetch daily AI summary error:', err);
+          if (axios.isAxiosError(err) && err.response && err.response.status === 404) {
+            setDailySummary(`해당 날짜(${reportDate})에 대한 AI 요약이 아직 생성되지 않았습니다. '조회' 버튼을 눌러 상세 보고서 생성을 시도하면 요약도 함께 생성될 수 있습니다.`);
+          } else if (axios.isAxiosError(err) && err.response) {
+            setDailySummary(`일일 AI 요약 로딩 중 오류가 발생했습니다: ${err.response.status} ${err.response.data?.detail || err.response.statusText}. 상세 내용은 콘솔을 확인하세요.`);
+          } 
+          else {
+            setDailySummary('일일 AI 요약 로딩 중 네트워크 또는 알 수 없는 오류가 발생했습니다.');
+          }
+        })
+        .finally(() => {
+          setAiLoading(false);
+        });
     }
-  }, [page, reportDate])
+  }, [page, reportDate]); // Dependencies: page and reportDate
 
   return (
     <div className="app-container">

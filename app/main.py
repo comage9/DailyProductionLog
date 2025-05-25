@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+
+# TODO: Future Codebase Improvements (General)
+# 1. Refactor app/main.py into smaller, feature-specific modules:
+#    - data_management.py: For CSV/DB data loading, caching (e.g., fetch_csv_to_db_sync, download_and_store_realtime_sync, load_history_cache).
+#    - llm_service.py: For Ollama interactions (e.g., run_llm_prompt, generate_insight_for_date).
+#    - routers/: Create a 'routers' directory to group related API endpoints (e.g., routers/reports.py, routers/analysis.py, routers/data.py).
+# 2. Standardize Identifiers and Comments:
+#    - Convert all variable names, function names, class names, and comments to English for better maintainability, collaboration, and to avoid potential encoding issues.
+#    - Example: '일자' to 'date', '품목' to 'item', '수량(박스)' to 'quantity_boxes'.
+# 3. Configuration Management:
+#    - Move all configurable constants (CSV_URL, REALTIME_CSV_URL, INVENTORY_CSV_URL, default table names if not from env, LLM model names)
+#      to environment variables or a dedicated configuration file (e.g., config.py or settings.toml).
+#    - Ensure all environment variables have sensible defaults and are clearly documented (e.g., in a README.md or .env.example file).
+
 from fastapi import FastAPI, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -40,8 +54,12 @@ from app.decomposition import decompose_time_series, forecast_arima
 # Load settings
 load_dotenv()
 db_path = os.getenv("DB_PATH", "vf.db")
+# TODO: The default table name below uses Korean characters and spaces.
+#       It's recommended to change the default to a simpler ASCII name (e.g., "vf_shipment_ocr_google_daily_report")
+#       and ensure all such configurations are clearly documented and ideally managed via environment variables.
 table_name = os.getenv("TABLE_NAME", "vf 출고 수량 ocr google 보고서 - 일별 출고 수량 (4)")
 
+# TODO: Move these URLs to environment variables or a configuration file.
 # CSV URL for real-time data updates
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwqI0BG-d2aMrql7DK4fQQTjvu57VtToSLAkY_nq92a4Cg5GFVbIn6_IR7Fq6_O-2TloFSNlXT8ZWC/pub?gid=1152588885&single=true&output=csv"
 
@@ -55,63 +73,75 @@ last_realtime_update: str = ""
 real_time_cache: Dict[str, List[Optional[float]]] = {}
 history_daily_sum: Dict[str, float] = {}
 
+import asyncio # Added import
+from fastapi.concurrency import run_in_threadpool # Added import
+
 # Helper for running LLM prompts via Ollama CLI
-def run_llm_prompt(model: str, prompt: str) -> str:
+async def run_llm_prompt(model: str, prompt: str) -> str:
     try:
-        result = subprocess.run(
-            ["ollama", "run", model, prompt],
-            capture_output=True, text=True, encoding='utf-8', errors='replace'
+        process = await asyncio.create_subprocess_exec(
+            "ollama", "run", model, prompt,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            return stdout.decode(encoding='utf-8', errors='replace').strip()
         else:
-            logger.error(f"LLM error: {result.stderr.strip()}")
-            return result.stderr.strip()
+            logger.error(f"LLM error: {stderr.decode(encoding='utf-8', errors='replace').strip()}")
+            return stderr.decode(encoding='utf-8', errors='replace').strip()
     except Exception as e:
         logger.error(f"run_llm_prompt exception: {e}")
         return str(e)
 
-def fetch_csv_to_db():
+# fetch_csv_to_db_sync (and similar _sync functions like download_and_store_realtime_sync, fetch_inventory_to_db_sync)
+# are synchronous functions performing I/O (network requests, database operations).
+# They (and their callers like refresh_data, startup_event tasks) have been refactored
+# to be called within `await run_in_threadpool(...)` to ensure non-blocking behavior in the async FastAPI environment.
+def fetch_csv_to_db_sync(): # Renamed to indicate it's synchronous
     try:
         df_csv = pd.read_csv(CSV_URL, dtype=str, low_memory=False)
-        # 고유키 후보: 일자, 품목, 분류 (컬럼명 확인 필요)
         key_cols = ['일자', '품목', '분류']
         conn = sqlite3.connect(db_path)
-        # 테이블이 없으면 생성 (컬럼명 자동 추출)
-        cols = ', '.join([f'"{c}" TEXT' for c in df_csv.columns])
-        key_str = ', '.join([f'"{c}"' for c in key_cols])
-        # 기본적으로 TEXT로 생성, 필요시 타입 조정
-        conn.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({cols}, PRIMARY KEY ({key_str}))')
-        # Ensure unique index on key columns to enable ON CONFLICT upsert; wrap in try to ignore existing violations
         try:
-            conn.execute(
-                f'CREATE UNIQUE INDEX IF NOT EXISTS "idx_{table_name}_key" ON "{table_name}" ({key_str})'
-            )
-        except Exception as e:
-            logger.warning(f'Unique index creation skipped due to: {e}')
-        # Clear existing data to avoid stale or duplicate rows
-        conn.execute(f'DELETE FROM "{table_name}"')
-        conn.commit()
-        # upsert all CSV data
-        if not df_csv.empty:
-            placeholders = ','.join(['?'] * len(df_csv.columns))
-            update_cols = ','.join([f'"{c}"=excluded."{c}"' for c in df_csv.columns if c not in key_cols])
-            sql = f'INSERT INTO "{table_name}" ({",".join([f"\"{c}\"" for c in df_csv.columns])}) VALUES ({placeholders}) ON CONFLICT({key_str}) DO UPDATE SET {update_cols}'
-            conn.executemany(sql, df_csv.values.tolist())
+            cols = ', '.join([f'"{c}" TEXT' for c in df_csv.columns])
+            key_str = ', '.join([f'"{c}"' for c in key_cols])
+            conn.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({cols}, PRIMARY KEY ({key_str}))')
+            try:
+                conn.execute(
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "idx_{table_name}_key" ON "{table_name}" ({key_str})'
+                )
+            except Exception as e_index:
+                logger.warning(f'Unique index creation skipped due to: {e_index}')
+            conn.execute(f'DELETE FROM "{table_name}"') # Clear existing data
             conn.commit()
-            # Delete rows not present in the CSV to remove stale items
-            existing_keys = set(conn.execute(f'SELECT {key_str} FROM "{table_name}"').fetchall())
-            csv_keys = set(tuple(r[c] for c in key_cols) for _, r in df_csv.iterrows())
-            for key in existing_keys - csv_keys:
-                where_clause = ' AND '.join([f'"{col}"=?' for col in key_cols])
-                conn.execute(f'DELETE FROM "{table_name}" WHERE {where_clause}', key)
-            conn.commit()
-        conn.close()
-        logger.debug(f"Fetched CSV data ({df_csv.shape}), upserted {len(df_csv)} rows to {table_name}")
-    except Exception as e:
-        logger.error(f"Error fetching CSV data: {e}")
+            if not df_csv.empty:
+                placeholders = ','.join(['?'] * len(df_csv.columns))
+                update_cols = ','.join([f'"{c}"=excluded."{c}"' for c in df_csv.columns if c not in key_cols])
+                sql = f'INSERT INTO "{table_name}" ({",".join([f"\"{c}\"" for c in df_csv.columns])}) VALUES ({placeholders}) ON CONFLICT({key_str}) DO UPDATE SET {update_cols}'
+                conn.executemany(sql, df_csv.values.tolist())
+                conn.commit()
+                existing_keys_tuples = conn.execute(f'SELECT {key_str} FROM "{table_name}"').fetchall()
+                existing_keys = set(existing_keys_tuples)
+                
+                # Convert DataFrame rows to tuples of strings for consistent comparison
+                csv_keys_df = df_csv[key_cols].astype(str)
+                csv_keys = set(map(tuple, csv_keys_df.values))
 
-def download_and_store_realtime():
+                keys_to_delete = existing_keys - csv_keys
+                if keys_to_delete:
+                    delete_sql = f'DELETE FROM "{table_name}" WHERE ({key_str}) = ({",".join(["?"]*len(key_cols))})'
+                    conn.executemany(delete_sql, list(keys_to_delete))
+                    conn.commit()
+            logger.debug(f"Fetched CSV data ({df_csv.shape}), upserted/synced rows to {table_name}")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching CSV data: {e}", exc_info=True)
+        raise # Re-raise the exception to be caught by the caller if necessary
+
+# download_and_store_realtime_sync was refactored for async operation using run_in_threadpool.
+def download_and_store_realtime_sync(): # Renamed
     global last_realtime_update
     # retry download up to 3 times
     for attempt in range(3):
@@ -144,90 +174,120 @@ def download_and_store_realtime():
     day_col = next((c for c in df.columns if '요일' in c), None)
     total_col = next((c for c in df.columns if '합계' in c), None)
     if not (date_col and day_col and total_col):
-        raise Exception(f'필수 컬럼이 없습니다: {df.columns}')
+        logger.error(f'Realtime CSV 필수 컬럼이 없습니다: {df.columns}') # Log error
+        return # Exit if essential columns are missing
     melt = df.melt(id_vars=[date_col, day_col, total_col], var_name='hour', value_name='shipment')
     melt['hour'] = pd.to_numeric(melt['hour'], errors='coerce')
     melt = melt.dropna(subset=['hour'])
     melt['hour'] = melt['hour'].astype(int)
     melt[date_col] = pd.to_datetime(melt[date_col], errors='coerce').dt.strftime('%Y-%m-%d')
     melt = melt.rename(columns={date_col: '날짜'})
-    # Generate EDA report for realtime data
     try:
-        generate_eda_report(melt, output_dir="reports/eda/realtime")
+        generate_eda_report(melt, output_dir="reports/eda/realtime") # This might be CPU/IO intensive
     except Exception as e:
-        logger.warning(f"EDA report generation failed: {e}")
+        logger.warning(f"EDA report generation failed for realtime data: {e}")
+    
     conn = sqlite3.connect(DB_PATH)
-    # ensure table exists with primary key for upsert semantics
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS realtime_shipments (
-            날짜 TEXT,
-            hour INTEGER,
-            shipment REAL,
-            PRIMARY KEY (날짜, hour)
-        )"""
-    )
-    # ensure unique index on (날짜, hour) to support ON CONFLICT upsert
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_realtime_shipments_date_hour ON realtime_shipments(날짜, hour)"
-    )
-    # upsert each record into realtime_shipments
-    upsert_sql = (
-        "INSERT INTO realtime_shipments (날짜, hour, shipment) VALUES (?, ?, ?) "
-        "ON CONFLICT(날짜, hour) DO UPDATE SET shipment=excluded.shipment"
-    )
-    data = melt[['날짜', 'hour', 'shipment']].values.tolist()
-    conn.executemany(upsert_sql, data)
-    conn.commit()
-    conn.close()
-    # record last update timestamp
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS realtime_shipments (
+                날짜 TEXT,
+                hour INTEGER,
+                shipment REAL,
+                PRIMARY KEY (날짜, hour)
+            )"""
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_realtime_shipments_date_hour ON realtime_shipments(날짜, hour)"
+        )
+        upsert_sql = (
+            "INSERT INTO realtime_shipments (날짜, hour, shipment) VALUES (?, ?, ?) "
+            "ON CONFLICT(날짜, hour) DO UPDATE SET shipment=excluded.shipment"
+        )
+        data = melt[['날짜', 'hour', 'shipment']].values.tolist()
+        conn.executemany(upsert_sql, data)
+        conn.commit()
+    finally:
+        conn.close()
     last_realtime_update = datetime.now().isoformat()
+    logger.info("Realtime data downloaded and stored.")
 
-# Add inventory sync and cache loader
-def fetch_inventory_to_db():
+# fetch_inventory_to_db_sync was refactored for async operation using run_in_threadpool.
+def fetch_inventory_to_db_sync(): # Renamed
     try:
         df_csv = pd.read_csv(INVENTORY_CSV_URL, dtype=str, low_memory=False)
-        # strip whitespace from column names for consistent matching
         df_csv.columns = [str(c).strip() for c in df_csv.columns]
         display_cols = ['일자','시간','로케이션','분류','품명','바코드','전산 재고 수량','일 평균 출고 수량','단수']
-        drop_col = '미입고 수량'
-        if drop_col in df_csv.columns:
-            df_csv = df_csv.drop(columns=[drop_col])
-        df_csv = df_csv.loc[:, display_cols]
+        # Ensure all display_cols exist, or handle missing ones
+        actual_cols = [col for col in display_cols if col in df_csv.columns]
+        if '미입고 수량' in df_csv.columns:
+             df_csv = df_csv.drop(columns=['미입고 수량'], errors='ignore')
+        df_csv = df_csv.loc[:, actual_cols] # Use only actual_cols
         df_csv = df_csv.where(pd.notnull(df_csv), None)
+        
         conn = sqlite3.connect(DB_PATH)
-        key_cols = ['일자','시간','로케이션','바코드']
-        cols_def = ', '.join([f'"{c}" TEXT' for c in display_cols])
-        key_str = ', '.join([f'"{c}"' for c in key_cols])
-        conn.execute(f'CREATE TABLE IF NOT EXISTS inventory ({cols_def}, PRIMARY KEY ({key_str}))')
-        conn.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_key ON inventory({key_str})')
-        placeholders = ','.join(['?'] * len(display_cols))
-        col_list = ','.join([f'"{c}"' for c in display_cols])
-        update_cols = ','.join([f'"{c}"=excluded."{c}"' for c in display_cols if c not in key_cols])
-        upsert_sql = f'INSERT INTO inventory ({col_list}) VALUES ({placeholders}) ON CONFLICT({key_str}) DO UPDATE SET {update_cols}'
-        conn.executemany(upsert_sql, df_csv.values.tolist())
-        existing_keys = set(conn.execute(f'SELECT {key_str} FROM inventory').fetchall())
-        csv_keys = set([tuple([r[c] for c in key_cols]) for _, r in df_csv.iterrows()])
-        for key in existing_keys - csv_keys:
-            where_clause = ' AND '.join([f'"{col}"=?' for col in key_cols])
-            conn.execute(f'DELETE FROM inventory WHERE {where_clause}', key)
-        conn.commit()
-        conn.close()
-        logger.debug(f"Fetched inventory data ({len(df_csv)}) rows into 'inventory' table")
+        try:
+            key_cols = ['일자','시간','로케이션','바코드']
+            # Ensure key_cols are present in actual_cols
+            valid_key_cols = [kc for kc in key_cols if kc in actual_cols]
+            if len(valid_key_cols) != len(key_cols):
+                logger.error(f"Inventory CSV missing some key columns. Expected: {key_cols}, Found: {valid_key_cols}")
+                return
+
+            cols_def = ', '.join([f'"{c}" TEXT' for c in actual_cols])
+            key_str = ', '.join([f'"{c}"' for c in valid_key_cols])
+            conn.execute(f'CREATE TABLE IF NOT EXISTS inventory ({cols_def}, PRIMARY KEY ({key_str}))')
+            conn.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_key ON inventory({key_str})')
+            
+            placeholders = ','.join(['?'] * len(actual_cols))
+            col_list_str = ','.join([f'"{c}"' for c in actual_cols])
+            update_cols_list = [f'"{c}"=excluded."{c}"' for c in actual_cols if c not in valid_key_cols]
+            update_cols_str = ','.join(update_cols_list)
+            
+            upsert_sql = f'INSERT INTO inventory ({col_list_str}) VALUES ({placeholders}) ON CONFLICT({key_str}) DO UPDATE SET {update_cols_str}'
+            if not update_cols_list: # If all columns are part of the key, DO NOTHING on conflict
+                 upsert_sql = f'INSERT OR IGNORE INTO inventory ({col_list_str}) VALUES ({placeholders})'
+
+            conn.executemany(upsert_sql, df_csv.reindex(columns=actual_cols).values.tolist()) # Ensure column order
+            
+            # Sync: Delete rows not in CSV
+            existing_keys_tuples = conn.execute(f'SELECT {key_str} FROM inventory').fetchall()
+            existing_keys = set(existing_keys_tuples)
+            
+            csv_keys_df = df_csv[valid_key_cols].astype(str) # Convert to string for consistency
+            csv_keys = set(map(tuple, csv_keys_df.values))
+
+            keys_to_delete = existing_keys - csv_keys
+            if keys_to_delete:
+                delete_sql = f'DELETE FROM inventory WHERE ({key_str}) = ({",".join(["?"]*len(valid_key_cols))})'
+                conn.executemany(delete_sql, list(keys_to_delete))
+            conn.commit()
+            logger.debug(f"Fetched inventory data ({len(df_csv)}) rows into 'inventory' table")
+        finally:
+            conn.close()
     except Exception as e:
-        logger.error(f"Error syncing inventory to DB: {e}")
+        logger.error(f"Error syncing inventory to DB: {e}", exc_info=True)
+        raise
 
 inventory_cache: List[Dict] = []
 
-def load_inventory_cache():
+# load_inventory_cache is synchronous, will be called with run_in_threadpool.
+def load_inventory_cache_sync(): # Renamed
     global inventory_cache
     conn = sqlite3.connect(DB_PATH)
-    df_inv = pd.read_sql_query("SELECT * FROM inventory", conn)
-    conn.close()
+    try:
+        df_inv = pd.read_sql_query("SELECT * FROM inventory", conn)
+    finally:
+        conn.close()
     df_inv = df_inv.where(pd.notnull(df_inv), None)
     inventory_cache = df_inv.to_dict(orient='records')
+    logger.info("Inventory cache loaded.")
 
 # Initialize application and data
 app = FastAPI(title="출고 수량 분석 API")
+
+# Import run_in_threadpool for SQLite operations
+from fastapi.concurrency import run_in_threadpool
 
 # Add CORS middleware to allow external access
 app.add_middleware(
@@ -245,21 +305,30 @@ async def access_log_middleware(request: Request, call_next):
     # Skip logging for the access.log endpoint to prevent file modification during streaming
     if request.url.path == "/access.log":
         return response
-    try:
-        # Determine base directory for log file
-        if getattr(sys, 'frozen', False):
-            base_dir = sys._MEIPASS
-        else:
-            base_dir = os.getcwd()
-        log_path = os.path.join(base_dir, 'access.log')
-        ts = datetime.now().isoformat()
-        client_ip = request.client.host
-        method = request.method
-        path = request.url.path
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(f"{ts}\t{client_ip}\t{method}\t{path}\n")
-    except Exception as e:
-        logger.error(f"Failed to write access log: {e}")
+    
+    # Run file I/O in a thread pool to prevent blocking
+    async def write_log_async():
+        try:
+            # Determine base directory for log file
+            if getattr(sys, 'frozen', False):
+                base_dir = sys._MEIPASS
+            else:
+                base_dir = os.getcwd()
+            log_path = os.path.join(base_dir, 'access.log')
+            ts = datetime.now().isoformat()
+            client_ip = request.client.host
+            method = request.method
+            path = request.url.path
+            
+            # Use run_in_threadpool for the file open and write operations
+            await run_in_threadpool(lambda: 
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"{ts}\t{client_ip}\t{method}\t{path}\n")
+            )
+        except Exception as e:
+            logger.error(f"Failed to write access log: {e}")
+    
+    await write_log_async()
     return response
 
 
@@ -289,40 +358,55 @@ async def get_coupan_bono_house_report():
         raise HTTPException(status_code=500, detail=f"보고서 생성 중 오류 발생: {str(e)}")
 
 
-# Initial data load from CSV
-fetch_csv_to_db()
-df = load_df(db_path, table_name)
-dimensions = aggregate_dimension(df)
+# Initial data loading will be handled in startup_event
+# fetch_csv_to_db() # Removed, will be called in startup
+df = None # Will be loaded in startup
+dimensions = {} # Will be loaded in startup
 
-# NEW: Download realtime data at startup
-try:
-    download_and_store_realtime()
-except Exception as e:
-    logger.error(f'Failed to download realtime data at startup: {e}')
+# The asyncio.run calls for initial_realtime_download and initial_inventory_load
+# are removed as these will be handled during app startup.
 
-# INITIAL inventory load
-fetch_inventory_to_db()
-load_inventory_cache()
+async def initial_realtime_download():
+    try:
+        logger.info("Attempting initial realtime data download...")
+        await run_in_threadpool(download_and_store_realtime_sync)
+        logger.info("Initial realtime data download successful.")
+    except Exception as e:
+        logger.error(f'Failed to download realtime data at startup: {e}', exc_info=True)
+
+async def initial_inventory_and_cache_load():
+    try:
+        logger.info("Attempting initial inventory fetch and cache load...")
+        await run_in_threadpool(fetch_inventory_to_db_sync)
+        await run_in_threadpool(load_inventory_cache_sync)
+        logger.info("Initial inventory fetch and cache load successful.")
+    except Exception as e:
+        logger.error(f'Failed to load inventory and cache at startup: {e}', exc_info=True)
 
 # Generic function to generate and store AI insight for a given date
-def generate_insight_for_date(date_str: str) -> str:
+async def generate_insight_for_date(date_str: str) -> str:
     # Build context from specified date's data
     try:
+        # This part uses pandas DataFrame, which is CPU bound and can be run in threadpool if it becomes a bottleneck.
+        # For now, assume df operations are relatively quick or already optimized.
         df_prev = df[(df['일자'] >= pd.to_datetime(date_str)) & (df['일자'] <= pd.to_datetime(date_str))]
         item_qty = df_prev.groupby('품목')['수량(박스)'].sum().to_dict()
         item_sales = df_prev.groupby('품목')['판매금액'].sum().to_dict()
         context_str = f"조회 기간 {date_str}의 품목별 출고량 합계: {item_qty}. 판매금액 합계: {item_sales}."
         instruction = "생각 과정을 생략하고 간결하게 한국어로, 마크다운 형식으로 요약하세요."
         prompt = f"{instruction} {context_str}"
-        summary = run_llm_prompt('qwen3:4b', prompt)
-        # Store in DB
-        conn2 = sqlite3.connect(DB_PATH)
-        conn2.execute(
-            "INSERT OR REPLACE INTO insights (date, summary) VALUES (?, ?)",
-            (date_str, summary)
-        )
-        conn2.commit()
-        conn2.close()
+        summary = await run_llm_prompt('qwen3:4b', prompt)
+
+        # Store in DB (SQLite operations wrapped in run_in_threadpool)
+        def _store_insight_db(date_str_db, summary_db):
+            conn2 = sqlite3.connect(DB_PATH)
+            conn2.execute(
+                "INSERT OR REPLACE INTO insights (date, summary) VALUES (?, ?)",
+                (date_str_db, summary_db)
+            )
+            conn2.commit()
+            conn2.close()
+        await run_in_threadpool(_store_insight_db, date_str, summary)
         logger.info(f"AI insight generated and stored for {date_str}")
         return summary
     except Exception as e:
@@ -330,47 +414,67 @@ def generate_insight_for_date(date_str: str) -> str:
         raise
 
 # Job wrapper to generate yesterday's insight after data refresh
-def daily_insight_job():
+async def daily_insight_job():
     yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    generate_insight_for_date(yesterday)
+    await generate_insight_for_date(yesterday)
 
 # Initialize insights storage table
-conn_ins = sqlite3.connect(DB_PATH)
-conn_ins.execute("CREATE TABLE IF NOT EXISTS insights (date TEXT PRIMARY KEY, summary TEXT)")
-conn_ins.close()
+def _init_insights_db():
+    conn_ins = sqlite3.connect(DB_PATH)
+    conn_ins.execute("CREATE TABLE IF NOT EXISTS insights (date TEXT PRIMARY KEY, summary TEXT)")
+    conn_ins.close()
+asyncio.run(run_in_threadpool(_init_insights_db))
+
 
 # Scheduler to refresh data daily at midnight
-def refresh_data():
+async def refresh_data():
     global df, dimensions
-    # Refresh data from CSV and reload
-    fetch_csv_to_db()
-    df = load_df(db_path, table_name)
-    dimensions = aggregate_dimension(df)
-    # Refresh inventory data
-    fetch_inventory_to_db()
-    load_inventory_cache()
+    await run_in_threadpool(fetch_csv_to_db_sync)
+    
+    # Ensure global df is updated after fetch
+    loaded_df = await run_in_threadpool(load_df, db_path, table_name)
+    if loaded_df is not None:
+        df = loaded_df
+        dimensions = await run_in_threadpool(aggregate_dimension, df)
+    else:
+        logger.error("Failed to load main dataframe in refresh_data.")
+        # Potentially re-initialize df to an empty DataFrame or handle error
+        df = pd.DataFrame() # Example: re-initialize to empty
+        dimensions = {}
+
+    await run_in_threadpool(fetch_inventory_to_db_sync)
+    await run_in_threadpool(load_inventory_cache_sync)
+    logger.info("Data refresh job completed.")
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(refresh_data, 'cron', hour=0)  # Main historical data (daily)
-scheduler.add_job(download_and_store_realtime, 'interval', hours=1)  # Real-time hourly data (every hour)
-scheduler.add_job(fetch_inventory_to_db, 'interval', hours=3)  # Inventory sync every 3 hours
-scheduler.add_job(daily_insight_job, 'cron', hour=0, minute=5)  # Daily AI insight after data sync
-scheduler.start()
+scheduler.add_job(refresh_data, 'cron', hour=0)
+scheduler.add_job(lambda: asyncio.create_task(run_in_threadpool(download_and_store_realtime_sync)), 'interval', hours=1)
+scheduler.add_job(lambda: asyncio.create_task(run_in_threadpool(fetch_inventory_to_db_sync)), 'interval', hours=3)
+scheduler.add_job(daily_insight_job, 'cron', hour=0, minute=5)
 
 # Initialize in-memory caches for rapid access
-def load_history_cache():
+async def load_history_cache(): # Already async and uses run_in_threadpool for load_df
     global history_daily_sum
-    # aggregate daily sums from historical DataFrame
-    df_hist = load_df(db_path, table_name)
+    # load_df can be blocking if db_path is a file path.
+    # Assuming pandas operations themselves are CPU bound and acceptable.
+    df_hist = await run_in_threadpool(load_df, db_path, table_name)
     df_hist['일자'] = pd.to_datetime(df_hist['일자'], errors='coerce').dt.strftime('%Y-%m-%d')
+    # df_hist.groupby is a pandas operation, assume it's CPU bound and okay.
     history_daily_sum = df_hist.groupby('일자')['수량(박스)'].sum().to_dict()
 
-def load_realtime_cache():
+async def load_realtime_cache():
     global real_time_cache
-    conn2 = sqlite3.connect(DB_PATH)
-    df_rt = pd.read_sql_query("SELECT 날짜, hour, shipment FROM realtime_shipments", conn2)
-    conn2.close()
+    
+    def _read_realtime_db():
+        conn2 = sqlite3.connect(DB_PATH)
+        df_rt_db = pd.read_sql_query("SELECT 날짜, hour, shipment FROM realtime_shipments", conn2)
+        conn2.close()
+        return df_rt_db
+
+    df_rt = await run_in_threadpool(_read_realtime_db)
+    
     cache = {}
+    # Pandas operations are typically CPU-bound.
     for date, group in df_rt.groupby('날짜'):
         arr = [None] * 24
         for _, row in group.iterrows():
@@ -380,10 +484,15 @@ def load_realtime_cache():
         cache[date] = arr
     real_time_cache = cache
 
-# Load caches at startup
-load_history_cache()
-load_realtime_cache()
-load_inventory_cache()
+# Load caches at startup (now async)
+async def initial_cache_load():
+    await load_history_cache()
+    await load_realtime_cache()
+    # load_inventory_cache_sync is the synchronous version.
+    await run_in_threadpool(load_inventory_cache_sync)
+    logger.info("Initial cache loading process completed.")
+
+# asyncio.run(initial_cache_load()) # Removed, will be called in startup_event
 
 # Models
 class TrendParams(BaseModel):
@@ -590,8 +699,8 @@ async def _prepare_shipment_analysis_data(params: TrendParams, df_global: pd.Dat
     logger.debug(f"LLM Analysis Prompt (first 200 chars): {prompt_template_analysis[:200]}")
     logger.debug(f"LLM Recommendation Prompt (first 200 chars): {prompt_template_recommendation[:200]}")
 
-    llm_analysis_text = run_llm_prompt(model="qwen2:7b-instruct-q4_K_M", prompt=prompt_template_analysis)
-    llm_recommendation_text = run_llm_prompt(model="qwen2:7b-instruct-q4_K_M", prompt=prompt_template_recommendation)
+    llm_analysis_text = await run_llm_prompt(model="qwen2:7b-instruct-q4_K_M", prompt=prompt_template_analysis)
+    llm_recommendation_text = await run_llm_prompt(model="qwen2:7b-instruct-q4_K_M", prompt=prompt_template_recommendation)
 
     return {
         "filtered_df": df_report,
@@ -608,7 +717,54 @@ async def generate_shipment_report(params: TrendParams):
     주어진 기간 및 필터 조건에 따라 출고 데이터를 분석하고,
     AI를 활용하여 서술적 분석이 포함된 Markdown 보고서를 생성합니다.
     """
-    analysis_data = await _prepare_shipment_analysis_data(params, df_global=df) # df는 전역 DataFrame으로 가정
+    analysis_data = await _prepare_shipment_analysis_data(params, df_global=df)
+
+    if analysis_data.get("error"):
+        raise HTTPException(status_code=404, detail=analysis_data["error"])
+
+    # Extract values from analysis_data and params
+    report_generation_date = analysis_data.get("generation_date_str", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+    daily_summary = analysis_data.get("daily_summary_list", []) # Renamed from daily_summary_list to daily_summary
+
+    if params.from_date:
+        start_date_str = params.from_date.strftime('%Y-%m-%d')
+    elif daily_summary:
+        start_date_str = daily_summary[0]['일자']
+    else:
+        start_date_str = "N/A"
+
+    if params.to_date:
+        end_date_str = params.to_date.strftime('%Y-%m-%d')
+    elif daily_summary:
+        end_date_str = daily_summary[-1]['일자']
+    else:
+        end_date_str = "N/A"
+    
+    if params.item:
+        item_filter_str = ', '.join(params.item) if isinstance(params.item, list) else params.item
+    else:
+        item_filter_str = "전체"
+
+    if params.category:
+        category_filter_str = ', '.join(params.category) if isinstance(params.category, list) else params.category
+    else:
+        category_filter_str = "전체"
+
+    overall_metrics_dict = analysis_data.get("overall_metrics_dict", {})
+    total_quantity_boxes = overall_metrics_dict.get("total_quantity_boxes", 0)
+    total_sales_amount = overall_metrics_dict.get("total_sales_amount", 0)
+    average_daily_quantity_boxes = overall_metrics_dict.get("average_daily_quantity_boxes", 0)
+    average_daily_sales_amount = overall_metrics_dict.get("average_daily_sales_amount", 0)
+    
+    # Correctly access peak day information
+    peak_day_by_quantity_date = overall_metrics_dict.get("peak_day_by_quantity_date", "N/A")
+    peak_day_by_quantity_value = overall_metrics_dict.get("peak_day_by_quantity_value", 0)
+    peak_day_by_sales_date = overall_metrics_dict.get("peak_day_by_sales_date", "N/A")
+    peak_day_by_sales_value = overall_metrics_dict.get("peak_day_by_sales_value", 0)
+
+    llm_period_trend_analysis = analysis_data.get("llm_analysis_text", "AI 분석 내용을 가져오지 못했습니다.")
+    llm_observations_and_recommendations = analysis_data.get("llm_recommendation_text", "AI 제언 내용을 가져오지 못했습니다.")
 
     report_parts = [
         f"# 출고 데이터 분석 보고서\n",
@@ -627,8 +783,8 @@ async def generate_shipment_report(params: TrendParams):
         f"*   **총 판매 금액:** {total_sales_amount:,.0f}원",
         f"*   **일 평균 출고 수량 (박스):** {average_daily_quantity_boxes:,.2f}",
         f"*   **일 평균 판매 금액:** {average_daily_sales_amount:,.0f}원",
-        f"*   **최다 출고일 (수량 기준):** {peak_day_by_quantity.get('일자', 'N/A')} ({peak_day_by_quantity.get('수량(박스)', 0):,} 박스)",
-        f"*   **최다 판매일 (금액 기준):** {peak_day_by_sales.get('일자', 'N/A')} ({peak_day_by_sales.get('판매금액', 0):,.0f}원)\n",
+        f"*   **최다 출고일 (수량 기준):** {peak_day_by_quantity_date} ({peak_day_by_quantity_value:,} 박스)",
+        f"*   **최다 판매일 (금액 기준):** {peak_day_by_sales_date} ({peak_day_by_sales_value:,.0f}원)\n",
         "\n---\n",
         "## 2. 기간별 출고량 추이 분석\n",
         f"{llm_period_trend_analysis}\n",
@@ -641,8 +797,8 @@ async def generate_shipment_report(params: TrendParams):
         "|------------|------------|--------------|"
     ])
 
-    for row in daily_summary:
-        report_parts.append(f"| {row['일자']} | {row['수량(박스)']:,} | {row['판매금액']:,.0f}원 |")
+    for row in daily_summary: # Use the renamed variable
+        report_parts.append(f"| {row['일자']} | {row.get('수량(박스)', 0):,} | {row.get('판매금액', 0):,.0f}원 |")
 
     final_report = "\n".join(report_parts)
     logger.info("Shipment report generated successfully.")
@@ -652,33 +808,41 @@ async def generate_shipment_report(params: TrendParams):
 @app.post("/api/forecast")
 def get_forecast(params: ForecastParams):
     """Return forecasted values for 수량(박스) filtered by item, category, and date range."""
+@app.post("/api/forecast") # Keep as sync for now, or make it async if necessary
+async def get_forecast(params: ForecastParams): # Changed to async
+    """Return forecasted values for 수량(박스) filtered by item, category, and date range."""
     # 시간별 예측 요청 시, 최근 7일간 평균 시간별 출고량 누적으로 예측
     if getattr(params, 'freq', None) == 'H':
         logger.debug("Handling hourly forecast request based on avg increments")
         today_dt = pd.to_datetime(params.from_date or datetime.now().strftime('%Y-%m-%d'))
-        # 실제 오늘 데이터
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            df_today = pd.read_sql_query(
-                "SELECT hour, shipment FROM realtime_shipments WHERE 날짜 = ? ORDER BY hour",
-                conn, params=[today_dt.strftime('%Y-%m-%d')]
-            )
-            logger.debug(f"Today's data (df_today) shape: {df_today.shape}\n{df_today.head()}")
-        except Exception as e:
-            logger.error(f"Error fetching today's data: {e}")
-            df_today = pd.DataFrame({'hour':[], 'shipment':[]})
-        # 과거 7일 데이터
-        seven = (today_dt - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
-        try:
-            df_hist = pd.read_sql_query(
-                "SELECT 날짜, hour, shipment FROM realtime_shipments WHERE 날짜 >= ? AND 날짜 < ? ORDER BY 날짜, hour",
-                conn, params=[seven, today_dt.strftime('%Y-%m-%d')]
-            )
-            logger.debug(f"History data (df_hist) shape: {df_hist.shape}\n{df_hist.head()}")
-        except Exception as e:
-            logger.error(f"Error fetching history data: {e}")
-            df_hist = pd.DataFrame({'날짜':[], 'hour':[], 'shipment':[]})
-        conn.close()
+        
+        # DB operations wrapped in run_in_threadpool
+        def _fetch_forecast_data_db(today_dt_db):
+            conn_fc = sqlite3.connect(DB_PATH)
+            try:
+                df_today_db = pd.read_sql_query(
+                    "SELECT hour, shipment FROM realtime_shipments WHERE 날짜 = ? ORDER BY hour",
+                    conn_fc, params=[today_dt_db.strftime('%Y-%m-%d')]
+                )
+            except Exception as e_today:
+                logger.error(f"Error fetching today's data: {e_today}")
+                df_today_db = pd.DataFrame({'hour':[], 'shipment':[]})
+            
+            seven_db = (today_dt_db - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+            try:
+                df_hist_db = pd.read_sql_query(
+                    "SELECT 날짜, hour, shipment FROM realtime_shipments WHERE 날짜 >= ? AND 날짜 < ? ORDER BY 날짜, hour",
+                    conn_fc, params=[seven_db, today_dt_db.strftime('%Y-%m-%d')]
+                )
+            except Exception as e_hist:
+                logger.error(f"Error fetching history data: {e_hist}")
+                df_hist_db = pd.DataFrame({'날짜':[], 'hour':[], 'shipment':[]})
+            conn_fc.close()
+            return df_today_db, df_hist_db
+
+        df_today, df_hist = await run_in_threadpool(_fetch_forecast_data_db, today_dt)
+        logger.debug(f"Today's data (df_today) shape: {df_today.shape}\n{df_today.head()}")
+        logger.debug(f"History data (df_hist) shape: {df_hist.shape}\n{df_hist.head()}")
 
         # 오늘 데이터에서 실적이 있는 시간대 찾기
         present_hours = df_today.dropna(subset=['shipment'])['hour'].astype(int).tolist()
@@ -863,8 +1027,8 @@ class InsightParams(BaseModel):
     model: str
     question: Optional[str] = None  # optional follow-up question for chat
 
-@app.post("/api/insight")
-def get_insight(params: InsightParams):
+@app.post("/api/insight") # Keep as sync for now, or make it async if necessary
+async def get_insight(params: InsightParams): # Changed to async
     """Handle initial summary of top-performing categories and follow-up Q&A."""
     logger.debug(f"get_insight called with: {params}")
     # If no follow-up question, generate default summary of categories with most increase
@@ -935,27 +1099,31 @@ def get_insight(params: InsightParams):
     instruction = "생각 과정을 생략하고, 질문에 대한 정답만 간결하게 한국어로, 마크다운 형식으로 답변하세요."
     prompt = f"{instruction} {context_str} 추가 질문: {params.question}"
     logger.debug(f"Insight prompt (Q&A): {prompt}")
-    # Call ollama CLI
-    result = run_llm_prompt(params.model, prompt)
+    # Call ollama CLI (now async)
+    result = await run_llm_prompt(params.model, prompt)
     return {"insight": result}
 
 # Endpoint to manually refresh data from CSV to DB
-@app.post("/api/refresh-data")
-def refresh_data_endpoint():
+@app.post("/api/refresh-data") # Keep as sync for now, or make it async if necessary
+async def refresh_data_endpoint(): # Changed to async
     """Fetch the remote CSV, replace DB table, and reload in-memory data."""
-    fetch_csv_to_db()
+    await run_in_threadpool(fetch_csv_to_db)
     global df, dimensions
-    df = load_df(db_path, table_name)
-    dimensions = aggregate_dimension(df)
-    # refresh in-memory history cache
-    load_history_cache()
-    # refresh inventory data and cache
-    fetch_inventory_to_db()
-    load_inventory_cache()
+    # Assuming load_df and aggregate_dimension are okay as is or wrapped if they become bottlenecks.
+    # For consistency, let's wrap them if they involve direct file I/O for db_path.
+    # load_df is already wrapped in refresh_data, so this usage should be fine.
+    df = await run_in_threadpool(load_df, db_path, table_name)
+    dimensions = await run_in_threadpool(aggregate_dimension, df)
+    
+    # refresh in-memory history cache (now async)
+    await load_history_cache()
+    # refresh inventory data and cache (fetch_inventory_to_db and load_inventory_cache are sync)
+    await run_in_threadpool(fetch_inventory_to_db)
+    await run_in_threadpool(load_inventory_cache)
     return {"status": "data refreshed"}
 
-@app.post("/api/backtest")
-def get_backtest(params: BacktestParams):
+@app.post("/api/backtest") # Keep as sync for now, or make it async if necessary
+async def get_backtest(params: BacktestParams): # Changed to async
     """Return historical daily forecast and error rate between from_date and to_date."""
     df2 = df
     if params.item:
@@ -983,11 +1151,12 @@ def get_backtest(params: BacktestParams):
     # Return per-day records
     return merged[['ds', 'y', 'yhat', 'yhat_lower', 'yhat_upper', 'error_rate']].to_dict(orient='records')
 
-@app.post('/api/realtime/refresh')
-def refresh_realtime():
+@app.post('/api/realtime/refresh') # Keep as sync for now, or make it async if necessary
+async def refresh_realtime(): # Changed to async
     # 즉시 realtime 데이터를 다운로드하고 캐시를 업데이트합니다
-    download_and_store_realtime()
-    load_realtime_cache()
+    # download_and_store_realtime and load_realtime_cache are sync and need run_in_threadpool
+    await run_in_threadpool(download_and_store_realtime)
+    await load_realtime_cache() # load_realtime_cache is now async
     return {'status': 'realtime data refreshed'}
 
 @app.get('/api/realtime/status')
@@ -1006,18 +1175,23 @@ def get_realtime_history(date: str):
     shipments = real_time_cache.get(date, [None] * 24)
     return {'date': date, 'shipments': shipments}
 
-@app.get('/api/realtime/weekday-trend')
-def get_weekday_trend():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT 날짜, hour, shipment FROM realtime_shipments", conn)
-    conn.close()
-    df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
-    df = df.dropna(subset=['날짜'])
-    df['weekday'] = df['날짜'].dt.weekday  # Monday=0, Sunday=6
+@app.get('/api/realtime/weekday-trend') # Keep as sync for now, or make it async if necessary
+async def get_weekday_trend(): # Changed to async
+    
+    def _read_weekday_trend_db():
+        conn_trend = sqlite3.connect(DB_PATH)
+        df_trend = pd.read_sql_query("SELECT 날짜, hour, shipment FROM realtime_shipments", conn_trend)
+        conn_trend.close()
+        return df_trend
+        
+    df_local = await run_in_threadpool(_read_weekday_trend_db) # Renamed to df_local to avoid conflict with global df
+    df_local['날짜'] = pd.to_datetime(df_local['날짜'], errors='coerce')
+    df_local = df_local.dropna(subset=['날짜'])
+    df_local['weekday'] = df_local['날짜'].dt.weekday  # Monday=0, Sunday=6
     # 최근 4주만 사용
-    max_date = df['날짜'].max()
+    max_date = df_local['날짜'].max() # Use df_local
     min_date = max_date - pd.Timedelta(days=28)
-    df_recent = df[df['날짜'] >= min_date]
+    df_recent = df_local[df_local['날짜'] >= min_date] # Use df_local
     # 요일별, 시간별 평균
     weekday_map = {0:'Mon', 1:'Tue', 2:'Wed', 3:'Thu', 4:'Fri', 5:'Sat', 6:'Sun'}
     result = {}
@@ -1029,22 +1203,23 @@ def get_weekday_trend():
         result[weekday_map[wd]] = arr 
     return result
 
-@app.get('/api/status/daily-sum')
-def get_daily_sums():
+@app.get('/api/status/daily-sum') # Keep as sync for now, or make it async if necessary
+async def get_daily_sums(): # Changed to async
     """Return daily total shipments for historical analysis."""
     # Fetch fresh sheet CSV into DB and reload cache to ensure up-to-date
-    fetch_csv_to_db()
-    load_history_cache()
+    # fetch_csv_to_db is sync, load_history_cache is now async
+    await run_in_threadpool(fetch_csv_to_db)
+    await load_history_cache()
     return [{'date': d, 'sum': s} for d, s in history_daily_sum.items()]
 
-@app.get("/api/top-item")
+@app.get("/api/top-item") # Already async, pandas operations are CPU bound
 async def get_top_item(date: date = Query(None, description="조회할 날짜 (YYYY-MM-DD), 기본: 어제")):
     """Return the item with the highest shipment quantity for a specified date (default: yesterday)."""
     # Determine target date
     target_date = date or (datetime.now().date() - timedelta(days=1))
-    # Filter data for that date
+    # Filter data for that date (pandas operation, assumed okay)
     df_date = df[df['일자'] == pd.to_datetime(target_date)]
-    # Group by item and sum quantities
+    # Group by item and sum quantities (pandas operation, assumed okay)
     grp = df_date.groupby('품목')['수량(박스)'].sum()
     if grp.empty:
         return {"date": str(target_date), "item": None, "quantity": 0}
@@ -1065,13 +1240,21 @@ async def monthly_analysis(
     agg_col: str = Query("수량(박스)", description="Aggregation column"),
     date_col: str = Query("일자")
 ):
-    conn = sqlite3.connect(DB_PATH)
-    df_hist = pd.read_sql_query(
-        f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
-        conn
-    )
-    conn.close()
-    result_json = time_grouped_analysis(df_hist, "date", "M", "value", output_dir="reports/analysis/monthly")
+    # This function now directly calls the synchronous DB access and CPU-bound analysis.
+    # It should be wrapped in run_in_threadpool or made fully async if analysis part is IO-bound.
+    def _run_monthly_analysis():
+        conn_ma = sqlite3.connect(DB_PATH)
+        try:
+            df_hist_ma = pd.read_sql_query(
+                f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
+                conn_ma
+            )
+        finally:
+            conn_ma.close()
+        # time_grouped_analysis is CPU bound.
+        return time_grouped_analysis(df_hist_ma, "date", "M", "value", output_dir="reports/analysis/monthly")
+
+    result_json = await run_in_threadpool(_run_monthly_analysis)
     return JSONResponse(content=json.loads(result_json))
 
 @app.get("/api/analysis/weekly")
@@ -1079,13 +1262,18 @@ async def weekly_analysis(
     agg_col: str = Query("수량(박스)", description="Aggregation column"),
     date_col: str = Query("일자")
 ):
-    conn = sqlite3.connect(DB_PATH)
-    df_hist = pd.read_sql_query(
-        f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
-        conn
-    )
-    conn.close()
-    result_json = time_grouped_analysis(df_hist, "date", "W", "value", output_dir="reports/analysis/weekly")
+    def _run_weekly_analysis():
+        conn_wa = sqlite3.connect(DB_PATH)
+        try:
+            df_hist_wa = pd.read_sql_query(
+                f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
+                conn_wa
+            )
+        finally:
+            conn_wa.close()
+        return time_grouped_analysis(df_hist_wa, "date", "W", "value", output_dir="reports/analysis/weekly")
+        
+    result_json = await run_in_threadpool(_run_weekly_analysis)
     return JSONResponse(content=json.loads(result_json))
 
 @app.get("/api/analysis/decompose")
@@ -1094,15 +1282,19 @@ async def decompose(
     date_col: str = Query("일자"),
     period: int = Query(7, description="Decomposition period")
 ):
-    conn = sqlite3.connect(DB_PATH)
-    df_hist = pd.read_sql_query(
-        f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
-        conn
-    )
-    conn.close()
-    # Aggregate values by date to ensure unique index
-    series = df_hist.groupby("date")["value"].sum().sort_index()
-    comps = decompose_time_series(series, period, output_dir="reports/decomposition")
+    def _run_decompose():
+        conn_dc = sqlite3.connect(DB_PATH)
+        try:
+            df_hist_dc = pd.read_sql_query(
+                f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
+                conn_dc
+            )
+        finally:
+            conn_dc.close()
+        series = df_hist_dc.groupby("date")["value"].sum().sort_index() # CPU bound
+        return decompose_time_series(series, period, output_dir="reports/decomposition") # CPU bound
+
+    comps = await run_in_threadpool(_run_decompose)
     return JSONResponse(content={k: json.loads(v) for k, v in comps.items()})
 
 @app.get("/api/analysis/arima")
@@ -1112,52 +1304,73 @@ async def arima_forecast(
     order: str = Query("1,1,1"),
     steps: int = Query(10)
 ):
-    conn = sqlite3.connect(DB_PATH)
-    df_hist = pd.read_sql_query(
-        f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
-        conn
-    )
-    conn.close()
-    series = df_hist.set_index("date")["value"]
-    order_tuple = tuple(map(int, order.split(",")))
-    forecast_json = forecast_arima(series, order_tuple, steps)
+    def _run_arima_forecast():
+        conn_ar = sqlite3.connect(DB_PATH)
+        try:
+            df_hist_ar = pd.read_sql_query(
+                f"SELECT `{date_col}` as date, `{agg_col}` as value FROM `{table_name}`",
+                conn_ar
+            )
+        finally:
+            conn_ar.close()
+        series = df_hist_ar.set_index("date")["value"] # CPU bound
+        order_tuple = tuple(map(int, order.split(","))) # CPU bound
+        return forecast_arima(series, order_tuple, steps) # CPU bound
+        
+    forecast_json = await run_in_threadpool(_run_arima_forecast)
     return JSONResponse(content=json.loads(forecast_json))
 
 # === Insight storage retrieval and Q&A endpoints ===
 class InsightQuestion(BaseModel):
     question: str
 
-@app.get("/api/insights/{date_str}")
-def get_daily_insight(date_str: str):
+@app.get("/api/insights/{date_str}") # Keep as sync for now, or make it async if necessary
+async def get_daily_insight(date_str: str): # Changed to async
     try:
-        conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT summary FROM insights WHERE date=?", (date_str,)).fetchone()
-        conn.close()
+        def _read_insight_db(date_str_db):
+            conn_gi = sqlite3.connect(DB_PATH)
+            row_gi = conn_gi.execute("SELECT summary FROM insights WHERE date=?", (date_str_db,)).fetchone()
+            conn_gi.close()
+            return row_gi
+        
+        row = await run_in_threadpool(_read_insight_db, date_str)
+        
         if row:
             return {"date": date_str, "summary": row[0]}
-        # Generate on demand if missing
-        summary = generate_insight_for_date(date_str)
+        # Generate on demand if missing (generate_insight_for_date is now async)
+        summary = await generate_insight_for_date(date_str)
         return {"date": date_str, "summary": summary}
     except Exception as e:
+        # Log the full exception for debugging
+        logger.error(f"Error in get_daily_insight for date {date_str}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"AI insight generation failed: {e}")
+                            detail=f"AI insight generation failed: {str(e)}")
 
-@app.post("/api/insights/{date_str}/question")
-def question_insight(date_str: str, payload: InsightQuestion):
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT summary FROM insights WHERE date=?", (date_str,)).fetchone()
-    conn.close()
+@app.post("/api/insights/{date_str}/question") # Keep as sync for now, or make it async if necessary
+async def question_insight(date_str: str, payload: InsightQuestion): # Changed to async
+    
+    def _read_question_insight_db(date_str_db):
+        conn_qi = sqlite3.connect(DB_PATH)
+        row_qi = conn_qi.execute("SELECT summary FROM insights WHERE date=?", (date_str_db,)).fetchone()
+        conn_qi.close()
+        return row_qi
+        
+    row = await run_in_threadpool(_read_question_insight_db, date_str)
+    
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="No insight for given date")
     try:
         instruction = "생각 과정을 생략하고, 질문에 대한 정답만 간결하게 한국어로 답변하세요."
         prompt = f"{instruction} 참고 요약문: {row[0]} 추가 질문: {payload.question}"
-        answer = run_llm_prompt('qwen3:4b', prompt)
+        # run_llm_prompt is now async
+        answer = await run_llm_prompt('qwen3:4b', prompt)
         return {"date": date_str, "question": payload.question, "answer": answer}
     except Exception as e:
+        # Log the full exception for debugging
+        logger.error(f"Error in question_insight for date {date_str}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"AI Q&A failed: {e}")
+                            detail=f"AI Q&A failed: {str(e)}")
 
 @app.get("/api/insights/health")
 def insights_health():
@@ -1169,38 +1382,60 @@ def insights_health():
 
 @app.on_event("startup")
 async def startup_event():
+    global df, dimensions
     logger.info("Application startup sequence initiated.")
-    initialize_cache()
-    logger.info("Cache initialized.")
+
+    # Initialize main data table from CSV
+    try:
+        logger.info("Fetching initial CSV data to DB...")
+        await run_in_threadpool(fetch_csv_to_db_sync)
+        # Load data into global df and dimensions after fetching
+        loaded_df = await run_in_threadpool(load_df, db_path, table_name)
+        if loaded_df is not None:
+            df = loaded_df
+            dimensions = await run_in_threadpool(aggregate_dimension, df)
+            logger.info("Initial CSV data loaded into memory.")
+        else:
+            logger.error("Failed to load main dataframe at startup. df will be None.")
+            df = pd.DataFrame() # Initialize to empty DataFrame to prevent errors
+            dimensions = {}
+    except Exception as e:
+        logger.error(f"Error during initial CSV data fetch and load: {e}", exc_info=True)
+        # Initialize to empty DataFrame if loading fails
+        df = pd.DataFrame() 
+        dimensions = {}
+
+
+    # Download initial realtime data
+    await initial_realtime_download()
+
+    # Load initial inventory and its cache
+    await initial_inventory_and_cache_load()
     
-    # 주기적 보고서 생성을 위한 파라미터를 큐에 추가하는 작업 예약
-    # (schedule_periodic_reports는 이제 큐에 추가만 하고 즉시 생성 안 함)
+    # Initialize other caches (history, realtime)
+    # initial_cache_load calls load_history_cache and load_realtime_cache
+    await initial_cache_load() # This was previously run with asyncio.run()
+
+    initialize_cache() # This is for the report cache, ensure it's non-blocking or async if needed
+    logger.info("Report Cache initialized.")
+    
     await schedule_periodic_reports()
     logger.info("Periodic report scheduling (queuing) completed.")
 
-    # 보고서 큐를 주기적으로 처리하는 작업 스케줄링
     if scheduler:
         try:
-            # next_run_time을 현재 시간으로부터 1분 뒤로 설정하여 즉시 실행 방지
             run_time = datetime.now() + timedelta(minutes=1)
             scheduler.add_job(process_report_queue, 'interval', minutes=1, misfire_grace_time=60, id='process_report_queue_job', next_run_time=run_time)
-            logger.info(f"Job 'process_report_queue_job' added to scheduler (1-minute interval, next run at {run_time.strftime('%Y-%m-%d %H:%M:%S')}).")
+            logger.info(f"Job 'process_report_queue_job' added. Next run: {run_time.strftime('%Y-%m-%d %H:%M:%S')}.")
+            if not scheduler.running:
+                scheduler.start()
+                logger.info("Scheduler started successfully.")
+            else:
+                logger.info("Scheduler is already running.")
         except Exception as e:
-            logger.error(f"Error adding 'process_report_queue_job' to scheduler: {e}")
+            logger.error(f"Error with scheduler setup: {e}", exc_info=True)
     else:
-        logger.error("Scheduler not initialized. Cannot add 'process_report_queue_job'.")
-
-    # 스케줄러 시작
-    if scheduler and not scheduler.running:
-        try:
-            scheduler.start()
-            logger.info("Scheduler started successfully.")
-        except Exception as e:
-            logger.error(f"Error starting scheduler: {e}")
-    elif scheduler and scheduler.running:
-        logger.info("Scheduler is already running.")
-    else:
-        logger.warning("Scheduler was not started because it's not initialized.")
+        logger.error("Scheduler not initialized. Report queue processing job not added.")
 
 @app.on_event("shutdown")
 async def shutdown_event():

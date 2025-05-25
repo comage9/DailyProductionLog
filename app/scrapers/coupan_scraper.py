@@ -1,4 +1,22 @@
 # app/scrapers/coupan_scraper.py
+
+# TODO: Future Codebase Improvements (Scraper Specific)
+# 1. Standardize Comments and Identifiers:
+#    - Convert all comments, variable names, and function names to English for consistency and broader collaboration.
+# 2. Enhance Selector Robustness:
+#    - Explore using more stable selectors, such as XPath expressions based on text content or more specific attributes,
+#      to reduce breakage when Coupang updates its HTML structure.
+#    - Consider using a library or pattern that allows defining multiple fallback selectors for critical elements.
+# 3. Improve Anti-Scraping Evasion:
+#    - Implement proxy rotation (e.g., using a pool of proxies from a service or private list).
+#    - Employ more sophisticated user-agent management (e.g., rotating through a list of realistic user agents).
+#    - Consider adding delays or randomized behavior that more closely mimics human interaction if IP blocking or CAPTCHAs become persistent.
+# 4. Modularize Scraping Logic:
+#    - Break down `scrape_product_details_from_coupan` into smaller functions for each section (e.g., _scrape_product_info, _scrape_reviews, _scrape_qna).
+# 5. Search Functionality:
+#    - Implement the `search_products_on_coupan` function which is currently commented out in `get_coupan_report_for_bono_house`.
+#      This would involve navigating Coupang's search results pages.
+
 import logging
 import asyncio
 import requests
@@ -24,14 +42,38 @@ from typing import List, Dict, Any
 #    이 경우 Selenium, Playwright 등의 브라우저 자동화 도구 사용을 고려해야 할 수 있으나,
 #    현재 프로젝트 구성 및 요청의 복잡도를 고려하여 우선 requests/BeautifulSoup으로 시도합니다.
 
-# 예시: 선택자는 실제 쿠팡 사이트를 분석하여 정확하게 수정해야 합니다.
-PRODUCT_NAME_SELECTOR = "h2.prod-buy-header__title"  # 상품명 CSS 선택자 (HTML에서 유효함 확인)
-PRICE_SELECTOR = ".prod-buy-price .total-price strong"  # 가격 CSS 선택자 (할인된 최종 가격의 숫자 부분)
-IMAGE_SELECTOR = "img#repImage"  # 대표 상품 이미지 CSS 선택자 (ID 사용)
-REVIEW_SELECTOR = ""  # TODO: 실제 리뷰 컨테이너 또는 리뷰 수 선택자로 변경 필요
-QNA_SELECTOR = ""  # TODO: 실제 Q&A 컨테이너 또는 Q&A 수 선택자로 변경 필요
-REVIEW_TAB_SELECTOR = "" # TODO: 실제 리뷰 탭 버튼 선택자로 변경 필요
-QNA_TAB_SELECTOR = "" # TODO: 실제 Q&A 탭 버튼 선택자로 변경 필요
+# CSS Selectors ( 쿠팡 웹사이트 구조 변경 시 업데이트 필요 )
+# 주의: 이 선택자들은 예시이며, 실제 쿠팡 웹사이트와 다를 수 있습니다.
+# 실제 사용 전 반드시 개발자 도구로 확인하고 업데이트해야 합니다.
+
+# 상품 기본 정보
+PRODUCT_NAME_SELECTOR = "h2.prod-buy-header__title"
+PRICE_SELECTOR = ".prod-buy-price .total-price strong"
+IMAGE_SELECTOR = "img#repImage"
+
+# 탭 선택자
+REVIEW_TAB_SELECTOR = "a[name='review']" # 예: <a name="review" href="...">리뷰</a>
+QNA_TAB_SELECTOR = "a[name='productInquiry']"    # 예: <a name="productInquiry" href="...">문의</a>
+
+# 리뷰 관련 선택자
+REVIEW_CONTAINER_SELECTOR = "article.sdp-review__article__list" # 각 리뷰 아이템을 포함하는 전체 컨테이너
+REVIEW_ITEM_SELECTOR = "article.sdp-review__article__list__review__item" # 개별 리뷰 아이템
+REVIEW_AUTHOR_SELECTOR = "span.sdp-review__article__list__info__user__name"
+REVIEW_RATING_SELECTOR = "div.sdp-review__article__list__info__product-info__star-gray > span" # width style로 별점 계산
+REVIEW_DATE_SELECTOR = "div.sdp-review__article__list__info__product-info__reg-date"
+REVIEW_CONTENT_SELECTOR = "div.sdp-review__article__list__review__content"
+REVIEW_SHOW_MORE_BUTTON_SELECTOR = "button.sdp-review__article__page__more__button" # "더보기" 버튼
+REVIEW_PAGINATION_SELECTOR = "button.sdp-review__article__page__num" # 페이지 번호 버튼들 (다음 페이지 클릭용)
+
+# Q&A 관련 선택자
+QNA_CONTAINER_SELECTOR = "div.product-qna__list-container" # Q&A 목록을 포함하는 전체 컨테이너
+QNA_ITEM_SELECTOR = "article.product-qna__item" # 개별 Q&A 아이템
+QNA_QUESTION_SELECTOR = "div.product-qna__item__question__text"
+QNA_ANSWER_SELECTOR = "div.product-qna__item__answer__text"
+QNA_AUTHOR_SELECTOR = "span.product-qna__item__writer-name" # 질문 작성자
+QNA_DATE_SELECTOR = "span.product-qna__item__date" # 질문 날짜
+QNA_SHOW_MORE_BUTTON_SELECTOR = "button.product-qna__page__more-button" # Q&A "더보기"
+QNA_PAGINATION_SELECTOR = "button.product-qna__page__num" # Q&A 페이지 번호 버튼
 
 logger = logging.getLogger(__name__)
 
@@ -65,213 +107,252 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         "reviews": [],
         "qna": [],
         "product_url": product_url,
+        "scrape_status": { # Enhanced error logging field
+            "details": "pending",
+            "reviews": "pending",
+            "qna": "pending"
+        }
     }
 
     try:
         driver = await asyncio.to_thread(setup_driver)
 
+        current_context = "initial page load"
         async def handle_alert_if_present(driver_instance, context_msg="알림 확인"):
+            nonlocal current_context # Allow modification of outer scope variable
+            current_context = context_msg # Update current context for error logging
             try:
-                # switch_to.alert는 즉시 실행되지만, .text나 .accept()는 블로킹 호출일 수 있음
                 alert = await asyncio.to_thread(lambda: driver_instance.switch_to.alert)
-                alert_text = await asyncio.to_thread(lambda: alert.text) # alert.text는 블로킹 가능
-                logger.info(f"알림창 감지됨 ({context_msg}): '{alert_text}'. 수락합니다.")
-                await asyncio.to_thread(alert.accept) # alert.accept()는 블로킹 가능
-                await asyncio.to_thread(time.sleep, random.uniform(0.5, 1.5)) # 알림창 닫힌 후 안정화 시간
+                alert_text = await asyncio.to_thread(lambda: alert.text)
+                logger.info(f"알림창 감지됨 ({current_context}): '{alert_text}'. 수락합니다.")
+                await asyncio.to_thread(alert.accept)
+                await asyncio.to_thread(time.sleep, random.uniform(0.5, 1.5))
                 return True
             except NoAlertPresentException:
-                # logger.debug(f"알림창 없음 ({context_msg}).") # 로그가 너무 많아질 수 있음
                 return False
             except Exception as e_alert:
-                logger.error(f"알림창 처리 중 오류 발생 ({context_msg}): {e_alert}")
+                logger.error(f"알림창 처리 중 오류 발생 ({current_context}): {e_alert}")
                 return False
+        
         await asyncio.to_thread(driver.get, product_url)
-
-        # --- 초기 알림창 처리 ---
-        logger.info(f"Checking for initial alert after loading URL: {product_url}")
         await handle_alert_if_present(driver, "initial page load")
-        logger.info("Initial alert check finished.")
-        # --- 초기 알림창 처리 끝 ---
-
-
-        # 페이지 로드 및 안정화 대기
-        # 알림창 처리 후, 그리고 주요 요소 추출 전에 페이지가 완전히 로드되고 안정화될 시간을 추가로 줍니다.
-        stabilization_time = random.uniform(5, 8) # 대기 시간을 5~8초로 늘림
-        logger.info(f"Waiting for page stabilization for {stabilization_time:.2f} seconds before extracting product name. URL: {product_url}")
+        
+        stabilization_time = random.uniform(3, 5) # 기본 안정화 시간
+        logger.info(f"Waiting for page stabilization for {stabilization_time:.2f} seconds. URL: {product_url}")
         await asyncio.to_thread(time.sleep, stabilization_time)
-        logger.info(f"Page stabilization wait finished. URL: {product_url}") 
+        
+        # 상품 기본 정보 스크래핑
+        current_context = "product name scraping"
 
-        # 상품명 추출 (WebDriverWait 사용)
         try:
-            logger.info(f"Attempting to find product name with selector: {PRODUCT_NAME_SELECTOR} for URL: {product_url}")
             product_name_element = await asyncio.to_thread(
-                WebDriverWait(driver, 30).until,  # 대기 시간 30초로 증가
+                WebDriverWait(driver, 20).until, # Increased timeout
                 EC.presence_of_element_located((By.CSS_SELECTOR, PRODUCT_NAME_SELECTOR))
             )
             product_details["product_name"] = product_name_element.text.strip()
-            logger.info(f"Found product name: {product_details['product_name']} for URL: {product_url}")
+            product_details["scrape_status"]["details"] = "success_product_name"
         except TimeoutException:
-            logger.warning(f"Product name not found (timed out after 30s) for {product_url} using selector '{PRODUCT_NAME_SELECTOR}'.")
-            try:
-                page_source_snippet = await asyncio.to_thread(lambda: driver.page_source[:5000]) # 페이지 소스 앞 5000자
-                logger.info(f"Page source snippet at Timeout for product name (first 5000 chars):\n{page_source_snippet}")
-            except Exception as ps_e:
-                logger.error(f"Failed to get page source on TimeoutException for product name: {ps_e}")
+            logger.warning(f"Timeout: Product name not found for {product_url} using selector '{PRODUCT_NAME_SELECTOR}'. Context: {current_context}")
+            product_details["scrape_status"]["details"] = f"failure_product_name: TimeoutException on selector {PRODUCT_NAME_SELECTOR}"
             await handle_alert_if_present(driver, "product name scraping (TimeoutException)")
-        except UnexpectedAlertPresentException as unexp_alert_e:
-            alert_text_from_exception = unexp_alert_e.alert_text if hasattr(unexp_alert_e, 'alert_text') and unexp_alert_e.alert_text else "N/A"
-            logger.error(f"UnexpectedAlertPresentException while finding product name for {product_url}. Alert text from exception: {alert_text_from_exception}. Selector: '{PRODUCT_NAME_SELECTOR}'.")
-            logger.debug(f"UnexpectedAlertPresentException details: {unexp_alert_e}")
-            try:
-                # 알림창이 이미 열려 있으므로 직접 처리 시도
-                alert = driver.switch_to.alert
-                actual_alert_text = alert.text
-                logger.info(f"Accepting alert directly in UnexpectedAlertPresentException handler. Actual alert text: {actual_alert_text}")
-                alert.accept()
-                logger.info("Alert accepted. Logging page source afterwards.")
-                # 알림창 처리 후 페이지 소스 로깅
-                page_source_after_alert = await asyncio.to_thread(lambda: driver.page_source[:5000])
-                logger.info(f"Page source snippet after accepting alert in UnexpectedAlertPresentException (first 5000 chars):\n{page_source_after_alert}")
-            except NoAlertPresentException:
-                logger.warning("NoAlertPresentException caught while trying to handle UnexpectedAlertPresentException - alert might have been dismissed already or by another handler.")
-            except Exception as alert_handling_e:
-                logger.error(f"Error handling alert within UnexpectedAlertPresentException block: {alert_handling_e}")
         except Exception as e:
-            logger.error(f"Error finding product name for {product_url} using selector '{PRODUCT_NAME_SELECTOR}': {e}")
-            try:
-                page_source_snippet = await asyncio.to_thread(lambda: driver.page_source[:5000])
-                logger.info(f"Page source snippet on general exception for product name (first 5000 chars):\n{page_source_snippet}")
-            except Exception as ps_e:
-                logger.error(f"Failed to get page source on general exception for product name: {ps_e}")
+            logger.error(f"Error finding product name for {product_url} using selector '{PRODUCT_NAME_SELECTOR}'. Context: {current_context}. Error: {e}")
+            product_details["scrape_status"]["details"] = f"failure_product_name: {type(e).__name__} on selector {PRODUCT_NAME_SELECTOR}"
             await handle_alert_if_present(driver, "product name scraping (General Exception)")
-
-        # 가격 추출
+        
+        current_context = "price scraping"
         if PRICE_SELECTOR:
             try:
-                # 가격 가져오기
-                logger.info(f"Attempting to find price with selector: {PRICE_SELECTOR} for URL: {product_url}")
-                price_element = WebDriverWait(driver, 30).until( # 대기 시간 30초로 증가
-                    EC.presence_of_element_located((By.CSS_SELECTOR, PRICE_SELECTOR)) # presence_of_element_located로 변경
+                price_element = await asyncio.to_thread(
+                    WebDriverWait(driver, 20).until, # Increased timeout
+                    EC.presence_of_element_located((By.CSS_SELECTOR, PRICE_SELECTOR))
                 )
-                logger.info(f"Price element found (present in DOM) for URL: {product_url}. Raw text from element: '{price_element.text}'")
-                
-                # Selenium의 .text 속성과 JavaScript의 textContent를 모두 시도
                 price_text_selenium = price_element.text.strip() if price_element.text else ""
+                price_text_js = await asyncio.to_thread(driver.execute_script, "return arguments[0].textContent;", price_element)
+                price_text_js = price_text_js.strip() if price_text_js else ""
                 
-                # JavaScript를 사용하여 textContent 가져오기 (좀 더 안정적일 수 있음)
-                price_text_js = ""
-                try:
-                    # driver.execute_script는 동기 함수이므로 asyncio.to_thread로 감싸야 합니다.
-                    price_text_js = await asyncio.to_thread(driver.execute_script, "return arguments[0].textContent;", price_element)
-                    price_text_js = price_text_js.strip() if price_text_js else ""
-                except Exception as js_exc:
-                    logger.warning(f"Failed to get price text using JavaScript for URL {product_url}: {js_exc}")
-
-                logger.info(f"Price text (Selenium): '{price_text_selenium}', Price text (JS): '{price_text_js}' for URL: {product_url}")
-
-                # Selenium .text 우선, 없거나 비정상적(숫자 없음)이면 JS 사용
                 price_text_to_parse = price_text_selenium
-                # Selenium 결과가 비어있거나, 청소 후 숫자가 아니면 JS 결과 시도
                 if not price_text_selenium or not price_text_selenium.replace(",", "").replace("원", "").isdigit():
-                    if price_text_js and price_text_js.replace(",", "").replace("원", "").isdigit(): # JS 결과가 있고, 청소 후 숫자이면 사용
-                         logger.info(f"Selenium text for price was empty or non-numeric ('{price_text_selenium}'), using JS text: '{price_text_js}' for URL: {product_url}")
+                    if price_text_js and price_text_js.replace(",", "").replace("원", "").isdigit():
                          price_text_to_parse = price_text_js
-                    else: # JS 결과도 부적절하면, 원래 Selenium 결과 사용 (로깅용)
-                         logger.info(f"Both Selenium ('{price_text_selenium}') and JS ('{price_text_js}') text for price are problematic or non-numeric. Sticking with Selenium's original for parsing attempt for URL: {product_url}")
-                         # price_text_to_parse는 이미 price_text_selenium으로 설정되어 있음
                 
-                if not price_text_to_parse: # 최종적으로 파싱할 텍스트가 없으면
-                     logger.warning(f"Price text is empty for selector: {PRICE_SELECTOR}. URL: {product_url}")
-                     # product_details["price"]는 "N/A"로 유지됨
-                else:
-                    cleaned_price_text = price_text_to_parse.replace(",", "").replace("원", "")
-                    if cleaned_price_text.isdigit():
-                        product_details["price"] = int(cleaned_price_text)
-                        logger.info(f"Price parsed successfully: {product_details['price']} from '{price_text_to_parse}' for URL: {product_url}")
+                if price_text_to_parse:
+                    cleaned_price = price_text_to_parse.replace(",", "").replace("원", "")
+                    if cleaned_price.isdigit():
+                        product_details["price"] = int(cleaned_price)
+                        product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + "; success_price"
                     else:
-                        # 숫자가 아닌 경우, 원본 텍스트를 저장하고 경고 로깅
-                        logger.warning(f"Price text found ('{price_text_to_parse}') but could not be parsed as integer after cleaning ('{cleaned_price_text}'). Selector: {PRICE_SELECTOR}. URL: {product_url}")
-                        product_details["price"] = price_text_to_parse # 파싱 실패시 원본 텍스트 저장
+                        product_details["price"] = price_text_to_parse # Store original if not parsable
+                        logger.warning(f"Price text '{price_text_to_parse}' not parsable for {product_url}. Context: {current_context}")
+                        product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_price_parse: '{price_text_to_parse}'"
+                else:
+                    logger.warning(f"Price text empty for {product_url}. Context: {current_context}")
+                    product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + "; failure_price_empty"
             except TimeoutException:
-                logger.warning(f"Price not found (timed out after 30s) using selector: {PRICE_SELECTOR} with presence_of_element_located. URL: {product_url}")
-                try:
-                    page_source_snippet = await asyncio.to_thread(lambda: driver.page_source[:5000]) # 페이지 소스 앞 5000자
-                    logger.info(f"Page source snippet at Timeout for price (first 5000 chars):\n{page_source_snippet}")
-                except Exception as ps_e:
-                    logger.error(f"Failed to get page source on TimeoutException for price: {ps_e}")
-                await handle_alert_if_present(driver, "price scraping (TimeoutException)") # 컨텍스트 메시지 추가
+                logger.warning(f"Timeout: Price not found for {product_url} using selector '{PRICE_SELECTOR}'. Context: {current_context}")
+                product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_price_timeout: {PRICE_SELECTOR}"
+                await handle_alert_if_present(driver, "price scraping (TimeoutException)")
             except Exception as e:
-                logger.error(f"Error finding or parsing price with selector {PRICE_SELECTOR}: {e}. URL: {product_url}")
-                await handle_alert_if_present(driver) # 알림창 확인 추가
+                logger.error(f"Error finding price for {product_url} using selector '{PRICE_SELECTOR}'. Context: {current_context}. Error: {e}")
+                product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_price_exception: {type(e).__name__} on {PRICE_SELECTOR}"
+                await handle_alert_if_present(driver, "price scraping (General Exception)")
 
-        # 이미지 URL 추출
+        current_context = "image URL scraping"
         if IMAGE_SELECTOR:
             try:
-                image_element = WebDriverWait(driver, 15).until(
+                image_element = await asyncio.to_thread(
+                    WebDriverWait(driver, 10).until, # Shorter timeout for image
                     EC.presence_of_element_located((By.CSS_SELECTOR, IMAGE_SELECTOR))
                 )
                 product_details["image_url"] = image_element.get_attribute('src')
                 if product_details["image_url"] and product_details["image_url"].startswith("//"):
                     product_details["image_url"] = "https" + product_details["image_url"]
-                logger.info(f"Found image URL: {product_details['image_url']}")
+                product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + "; success_image_url"
             except TimeoutException:
-                logger.warning(f"Image URL not found for {product_url} using selector '{IMAGE_SELECTOR}': TimeoutException")
+                logger.warning(f"Timeout: Image URL not found for {product_url} using selector '{IMAGE_SELECTOR}'. Context: {current_context}")
+                product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_image_url_timeout: {IMAGE_SELECTOR}"
             except Exception as e:
-                logger.warning(f"Image URL not found for {product_url} using selector '{IMAGE_SELECTOR}': {e}")
-
-        # 리뷰 추출 (WebDriverWait 및 탭 클릭 예시 - 실제 사이트 구조에 맞게 수정 필요)
-        if REVIEW_TAB_SELECTOR and REVIEW_SELECTOR:
+                logger.warning(f"Error finding image URL for {product_url} using selector '{IMAGE_SELECTOR}'. Context: {current_context}. Error: {e}")
+                product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_image_url_exception: {type(e).__name__} on {IMAGE_SELECTOR}"
+        
+        # --- 리뷰 스크래핑 ---
+        current_context = "reviews tab click"
+        if REVIEW_TAB_SELECTOR and REVIEW_ITEM_SELECTOR:
             try:
-                review_elements_present = await asyncio.to_thread(
+                review_tab_button = await asyncio.to_thread(
                     WebDriverWait(driver, 15).until,
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, REVIEW_SELECTOR))
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, REVIEW_TAB_SELECTOR))
                 )
+                await asyncio.to_thread(driver.execute_script, "arguments[0].click();", review_tab_button)
+                await asyncio.to_thread(time.sleep, random.uniform(2, 4)) # 탭 변경 후 로드 대기
 
-                page_source_after_interaction = await asyncio.to_thread(getattr, driver, 'page_source')
-                soup_reviews = BeautifulSoup(page_source_after_interaction, "html.parser")
-
-                reviews = soup_reviews.select(REVIEW_SELECTOR)
-                if reviews:
-                    for review in reviews:
-                        product_details["reviews"].append({"text": review.text.strip()})  # 임시로 전체 텍스트
-                    logger.info(f"Found {len(product_details['reviews'])} reviews for {product_url}")
-                else:
-                    logger.warning(f"No reviews found for {product_url} with selector '{REVIEW_SELECTOR}'. They might be dynamically loaded or selectors need update.")
+                current_context = "reviews scraping"
+                page_count = 0
+                max_review_pages = 5 # 최대 리뷰 페이지 수 (무한 스크롤 방지)
+                
+                while page_count < max_review_pages:
+                    await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);") # 페이지 끝까지 스크롤
+                    await asyncio.to_thread(time.sleep, random.uniform(1, 2)) # 스크롤 후 로드 대기
+                    
+                    soup = BeautifulSoup(await asyncio.to_thread(lambda: driver.page_source), "html.parser")
+                    review_elements = soup.select(REVIEW_ITEM_SELECTOR)
+                    
+                    current_reviews_count = len(product_details["reviews"])
+                    for review_el in review_elements[current_reviews_count:]: # 새로 로드된 리뷰만 추가
+                        author = review_el.select_one(REVIEW_AUTHOR_SELECTOR).text.strip() if review_el.select_one(REVIEW_AUTHOR_SELECTOR) else "N/A"
+                        rating_style = review_el.select_one(REVIEW_RATING_SELECTOR)['style'] if review_el.select_one(REVIEW_RATING_SELECTOR) else "width:0%"
+                        rating = int(float(rating_style.split("width:")[1].split("%")[0]) / 20) if "width:" in rating_style else 0 # 100% = 5 stars
+                        date = review_el.select_one(REVIEW_DATE_SELECTOR).text.strip() if review_el.select_one(REVIEW_DATE_SELECTOR) else "N/A"
+                        content = review_el.select_one(REVIEW_CONTENT_SELECTOR).text.strip() if review_el.select_one(REVIEW_CONTENT_SELECTOR) else "N/A"
+                        product_details["reviews"].append({
+                            "author": author, "rating": rating, "date": date, "content": content
+                        })
+                    
+                    try: # "더보기" 또는 페이지네이션 버튼 클릭
+                        show_more_button = await asyncio.to_thread(
+                            WebDriverWait(driver, 5).until, # 더보기 버튼은 짧게 대기
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, REVIEW_SHOW_MORE_BUTTON_SELECTOR))
+                        )
+                        await asyncio.to_thread(driver.execute_script, "arguments[0].click();", show_more_button)
+                        logger.info(f"Clicked review 'show more' button for {product_url}. Page {page_count + 1}")
+                        await asyncio.to_thread(time.sleep, random.uniform(2, 3))
+                    except TimeoutException: # 더보기 버튼이 없으면 페이지네이션 시도
+                        try:
+                            page_buttons = await asyncio.to_thread(lambda: driver.find_elements(By.CSS_SELECTOR, REVIEW_PAGINATION_SELECTOR))
+                            next_page_button = next((btn for btn in page_buttons if btn.text == str(page_count + 2)), None) # 다음 페이지 번호
+                            if next_page_button and next_page_button.is_enabled():
+                                await asyncio.to_thread(driver.execute_script, "arguments[0].click();", next_page_button)
+                                logger.info(f"Clicked review pagination button for page {page_count + 2} for {product_url}.")
+                                await asyncio.to_thread(time.sleep, random.uniform(2, 3))
+                            else:
+                                logger.info(f"No more review pages or 'show more' button found for {product_url}.")
+                                break 
+                        except Exception as page_e:
+                            logger.info(f"No more review pages or 'show more' (or error clicking pagination) for {product_url}: {page_e}")
+                            break 
+                    page_count += 1
+                product_details["scrape_status"]["reviews"] = f"success_found_{len(product_details['reviews'])}"
+            except TimeoutException:
+                logger.warning(f"Timeout: Review tab or initial reviews not found for {product_url}. Context: {current_context}")
+                product_details["scrape_status"]["reviews"] = f"failure_timeout_or_not_found: {current_context}"
             except Exception as e:
-                logger.error(f"Error scraping reviews for {product_url}: {e}")
-                logger.warning(f"No reviews found for {product_url}. They might be dynamically loaded or selectors need update.")
+                logger.error(f"Error scraping reviews for {product_url}. Context: {current_context}. Error: {e}")
+                product_details["scrape_status"]["reviews"] = f"failure_exception: {type(e).__name__} in {current_context}"
         else:
             logger.warning(f"Review selectors not fully defined for {product_url}. Skipping review scraping.")
-            product_details["reviews"] = [] # 또는 [{'error': 'Review selectors not defined'}]
+            product_details["scrape_status"]["reviews"] = "skipped_selectors_undefined"
 
-        # Q&A 추출 (WebDriverWait 및 탭 클릭 예시 - 실제 사이트 구조에 맞게 수정 필요)
-        if QNA_TAB_SELECTOR and QNA_SELECTOR:
+        # --- Q&A 스크래핑 ---
+        current_context = "qna tab click"
+        if QNA_TAB_SELECTOR and QNA_ITEM_SELECTOR:
             try:
-                qna_elements_present = await asyncio.to_thread(
+                qna_tab_button = await asyncio.to_thread(
                     WebDriverWait(driver, 15).until,
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, QNA_SELECTOR))
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, QNA_TAB_SELECTOR))
                 )
+                await asyncio.to_thread(driver.execute_script, "arguments[0].click();", qna_tab_button)
+                await asyncio.to_thread(time.sleep, random.uniform(2, 4))
 
-                page_source_after_qna_interaction = await asyncio.to_thread(getattr, driver, 'page_source')
-                soup_qna = BeautifulSoup(page_source_after_qna_interaction, "html.parser")
+                current_context = "qna scraping"
+                page_count_qna = 0
+                max_qna_pages = 5 
 
-                qna_items = soup_qna.select(QNA_SELECTOR)
-                if qna_items:
-                    for item in qna_items:
-                        product_details["qna"].append({"text": item.text.strip()})  # 임시로 전체 텍스트
-                    logger.info(f"Found {len(product_details['qna'])} Q&A items for {product_url}")
-                else:
-                    logger.warning(f"No Q&A found for {product_url} with selector '{QNA_SELECTOR}'. They might be dynamically loaded or selectors need update.")
+                while page_count_qna < max_qna_pages:
+                    await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);")
+                    await asyncio.to_thread(time.sleep, random.uniform(1, 2))
+                    
+                    soup_qna = BeautifulSoup(await asyncio.to_thread(lambda: driver.page_source), "html.parser")
+                    qna_elements = soup_qna.select(QNA_ITEM_SELECTOR)
+                    
+                    current_qna_count = len(product_details["qna"])
+                    for qna_el in qna_elements[current_qna_count:]:
+                        question = qna_el.select_one(QNA_QUESTION_SELECTOR).text.strip() if qna_el.select_one(QNA_QUESTION_SELECTOR) else "N/A"
+                        answer_el = qna_el.select_one(QNA_ANSWER_SELECTOR)
+                        answer = answer_el.text.strip() if answer_el else "답변 대기중이거나 없음"
+                        author = qna_el.select_one(QNA_AUTHOR_SELECTOR).text.strip() if qna_el.select_one(QNA_AUTHOR_SELECTOR) else "N/A"
+                        date = qna_el.select_one(QNA_DATE_SELECTOR).text.strip() if qna_el.select_one(QNA_DATE_SELECTOR) else "N/A"
+                        product_details["qna"].append({
+                            "question": question, "answer": answer, "author": author, "date": date
+                        })
+
+                    try:
+                        show_more_qna_button = await asyncio.to_thread(
+                            WebDriverWait(driver, 5).until,
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, QNA_SHOW_MORE_BUTTON_SELECTOR))
+                        )
+                        await asyncio.to_thread(driver.execute_script, "arguments[0].click();", show_more_qna_button)
+                        logger.info(f"Clicked Q&A 'show more' button for {product_url}. Page {page_count_qna + 1}")
+                        await asyncio.to_thread(time.sleep, random.uniform(2, 3))
+                    except TimeoutException:
+                        try:
+                            page_buttons_qna = await asyncio.to_thread(lambda: driver.find_elements(By.CSS_SELECTOR, QNA_PAGINATION_SELECTOR))
+                            next_page_qna_button = next((btn for btn in page_buttons_qna if btn.text == str(page_count_qna + 2)), None)
+                            if next_page_qna_button and next_page_qna_button.is_enabled():
+                                await asyncio.to_thread(driver.execute_script, "arguments[0].click();", next_page_qna_button)
+                                logger.info(f"Clicked Q&A pagination button for page {page_count_qna + 2} for {product_url}.")
+                                await asyncio.to_thread(time.sleep, random.uniform(2, 3))
+                            else:
+                                logger.info(f"No more Q&A pages or 'show more' button found for {product_url}.")
+                                break
+                        except Exception as page_q_e:
+                            logger.info(f"No more Q&A pages or 'show more' (or error clicking pagination) for {product_url}: {page_q_e}")
+                            break
+                    page_count_qna += 1
+                product_details["scrape_status"]["qna"] = f"success_found_{len(product_details['qna'])}"
+            except TimeoutException:
+                logger.warning(f"Timeout: Q&A tab or initial Q&A items not found for {product_url}. Context: {current_context}")
+                product_details["scrape_status"]["qna"] = f"failure_timeout_or_not_found: {current_context}"
             except Exception as e:
-                logger.error(f"Error scraping Q&A for {product_url}: {e}")
-                logger.warning(f"No Q&A found for {product_url}. They might be dynamically loaded or selectors need update.")
+                logger.error(f"Error scraping Q&A for {product_url}. Context: {current_context}. Error: {e}")
+                product_details["scrape_status"]["qna"] = f"failure_exception: {type(e).__name__} in {current_context}"
         else:
             logger.warning(f"Q&A selectors not fully defined for {product_url}. Skipping Q&A scraping.")
-            product_details["qna"] = [] # 또는 [{'error': 'Q&A selectors not defined'}]
+            product_details["scrape_status"]["qna"] = "skipped_selectors_undefined"
 
     except UnexpectedAlertPresentException as e:
-        logger.error(f"Critical UnexpectedAlertPresentException during scraping {product_url}: {e.alert_text if e.alert_text else str(e)}")
-        product_details["error"] = f"UnexpectedAlertPresentException: {e.alert_text if e.alert_text else str(e)}"
+        logger.error(f"Critical UnexpectedAlertPresentException during scraping {product_url} in context '{current_context}': {e.alert_text if e.alert_text else str(e)}")
+        product_details["error"] = f"UnexpectedAlertPresentException in {current_context}: {e.alert_text if e.alert_text else str(e)}"
+        product_details["scrape_status"]["critical"] = f"UnexpectedAlertPresentException in {current_context}"
         if driver:
             try:
                 # 예외 발생 시 알림창을 닫으려고 시도
@@ -280,8 +361,9 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
             except Exception as alert_e:
                 logger.error(f"Could not dismiss alert during critical error handling: {alert_e}")
     except Exception as e:
-        logger.error(f"An error occurred while scraping {product_url}: {e}")
-        product_details["error"] = str(e)
+        logger.error(f"An error occurred while scraping {product_url} in context '{current_context}': {e}", exc_info=True)
+        product_details["error"] = f"General error in {current_context}: {str(e)}"
+        product_details["scrape_status"]["critical"] = f"General error in {current_context}: {type(e).__name__}"
     finally:
         if driver:
             await asyncio.to_thread(driver.quit)
@@ -289,44 +371,52 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
 
     if product_details["product_name"] == "N/A" and product_details["price"] == "N/A" and product_details["image_url"] == "N/A":
         logger.warning(f"Failed to scrape significant details for {product_url}")
-        # product_details["error"]가 이미 설정되었을 수 있으므로, 덮어쓰지 않도록 주의
         if "error" not in product_details:
              product_details["error"] = "Failed to scrape significant details (name, price, image)."
-
+        product_details["scrape_status"]["overall"] = "failure_significant_details_missing"
     return product_details
 
-async def get_coupan_report_for_bono_house() -> List[Dict[str, Any]]:
+async def get_coupan_report_for_bono_house(keyword: str, max_products: int = 3) -> List[Dict[str, Any]]:
     """
-    "보노 하우스" 키워드로 쿠팡에서 상품 정보를 스크랩하여 보고서 형태로 반환합니다.
+    주어진 키워드로 쿠팡에서 상품 정보를 스크랩하여 보고서 형태로 반환합니다.
+    Parameters:
+        keyword (str): The search term to use on Coupang.
+        max_products (int): The maximum number of products to scrape details for from the search results.
+                           (Note: `search_products_on_coupan` which would use this is currently not implemented)
     """
-    keyword = "보노 하우스"
     report_data = []
-    max_products_to_scrape = 3 # 실제 스크랩할 최대 상품 수 제한
 
-    print(f"[INFO] Starting Coupang report generation for keyword: '{keyword}'")
-    product_page_urls = await search_products_on_coupan(keyword, max_pages=1) # 검색은 우선 1페이지만
+    # The 'keyword' and 'max_products' parameters allow for configurable scraping.
+    logger.info(f"Starting Coupang report generation for keyword: '{keyword}', max_products: {max_products}")
+    
+    # TODO: Implement `search_products_on_coupan(keyword, max_pages)` to get actual product URLs.
+    # This function would likely involve:
+    # 1. Navigating to Coupang's search page with the keyword.
+    # 2. Parsing the search results to extract product page URLs.
+    # 3. Handling pagination if `max_pages` > 1.
+    # product_page_urls = await search_products_on_coupan(keyword, max_pages=1) 
+    product_page_urls = [] # Using an empty list as `search_products_on_coupan` is not yet implemented.
 
     if not product_page_urls:
-        print(f"[WARN] No products found for keyword: '{keyword}'. Returning mock data as fallback.")
-        # 목업 데이터 반환 로직은 아래로 이동
+        logger.warning(f"No products found for keyword: '{keyword}' via search. Returning mock data as fallback.")
     else:
-        print(f"[INFO] Will attempt to scrape details for up to {max_products_to_scrape} products.")
-        for i, product_url in enumerate(product_page_urls[:max_products_to_scrape]):
-            print(f"[INFO] Scraping product {i+1}/{len(product_page_urls[:max_products_to_scrape])}: {product_url}")
+        logger.info(f"Will attempt to scrape details for up to {max_products} products for keyword '{keyword}'.")
+        for i, product_url in enumerate(product_page_urls[:max_products]):
+            logger.info(f"Scraping product {i+1}/{len(product_page_urls[:max_products])} for keyword '{keyword}': {product_url}")
             details = await scrape_product_details_from_coupan(product_url)
-            if details.get("product_name"): # 유효한 상품명이 있는 경우에만 추가
+            if details.get("product_name") and details["product_name"] != "N/A": # 유효한 상품명이 있는 경우
                 report_data.append(details)
             
-            # 마지막 요청이 아니면 대기
-            if i < len(product_page_urls[:max_products_to_scrape]) - 1:
-                await asyncio.sleep(random.uniform(2.0, 4.0)) # 요청 간 충분한 대기
+            if i < len(product_page_urls[:max_products]) - 1:
+                await asyncio.sleep(random.uniform(2.0, 4.0))
 
-    # 스크랩된 데이터가 없거나, 유의미한 데이터가 없는 경우 목업 데이터 사용
-    if not report_data or not any(item.get("product_name") for item in report_data):
-        print(f"[WARN] No actual data scraped or data was insufficient for '{keyword}'. Using MOCK DATA as fallback.")
+    if not report_data or not any(item.get("product_name") and item["product_name"] != "N/A" for item in report_data):
+        logger.warning(f"No actual data scraped or data was insufficient for '{keyword}'. Using MOCK DATA as fallback.")
+        # Mock data uses a generic keyword in product names to show it's mock
+        mock_keyword_display = keyword if keyword else "보노 하우스" # Fallback for mock display if keyword is empty
         report_data = [
             {
-                "product_name": "[보노하우스] 따뜻한 극세사 겨울 침구세트 (Q) (Mock)",
+                "product_name": f"[{mock_keyword_display}] 따뜻한 극세사 겨울 침구세트 (Q) (Mock)",
                 "product_url": "https://www.coupang.com/vp/products/12345_mock",
                 "reviews": [
                     {"author": "김*정", "rating": 5, "content": "너무 따뜻하고 좋아요! 색상도 예쁩니다.", "date": "2024.12.15"},
