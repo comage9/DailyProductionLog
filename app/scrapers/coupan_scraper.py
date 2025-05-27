@@ -52,18 +52,18 @@ PRICE_SELECTOR = ".prod-buy-price .total-price strong"
 IMAGE_SELECTOR = "img#repImage"
 
 # 탭 선택자
-REVIEW_TAB_SELECTOR = "a[name='review']" # 예: <a name="review" href="...">리뷰</a>
+REVIEW_TAB_SELECTOR = "a[name='review']" # Selector for the 'Reviews' tab.
 QNA_TAB_SELECTOR = "a[name='productInquiry']"    # 예: <a name="productInquiry" href="...">문의</a>
 
 # 리뷰 관련 선택자
-REVIEW_CONTAINER_SELECTOR = "article.sdp-review__article__list" # 각 리뷰 아이템을 포함하는 전체 컨테이너
-REVIEW_ITEM_SELECTOR = "article.sdp-review__article__list__review__item" # 개별 리뷰 아이템
-REVIEW_AUTHOR_SELECTOR = "span.sdp-review__article__list__info__user__name"
-REVIEW_RATING_SELECTOR = "div.sdp-review__article__list__info__product-info__star-gray > span" # width style로 별점 계산
-REVIEW_DATE_SELECTOR = "div.sdp-review__article__list__info__product-info__reg-date"
-REVIEW_CONTENT_SELECTOR = "div.sdp-review__article__list__review__content"
-REVIEW_SHOW_MORE_BUTTON_SELECTOR = "button.sdp-review__article__page__more__button" # "더보기" 버튼
-REVIEW_PAGINATION_SELECTOR = "button.sdp-review__article__page__num" # 페이지 번호 버튼들 (다음 페이지 클릭용)
+REVIEW_CONTAINER_SELECTOR = "div.sdp-review__article__list" # A div that likely wraps multiple review articles.
+REVIEW_ITEM_SELECTOR = "article.sdp-review__article__list" # Selector for an individual review entry/article. Each review seems to be an <article> with this class.
+REVIEW_AUTHOR_SELECTOR = "span.sdp-review__article__list__info__user__name" # Selector for the author's name.
+REVIEW_RATING_SELECTOR = "div.sdp-review__article__list__info__product-info__star-gray > span" # Selector for the star rating span (width style indicates rating).
+REVIEW_DATE_SELECTOR = "div.sdp-review__article__list__info__product-info__reg-date" # Selector for the review date.
+REVIEW_CONTENT_SELECTOR = "div.sdp-review__article__list__review__content" # Selector for the main text content of the review.
+REVIEW_SHOW_MORE_BUTTON_SELECTOR = "button.sdp-review__article__page__more__button" # Selector for the button to load more review items/pages.
+REVIEW_PAGINATION_SELECTOR = "button.sdp-review__article__page__num" # Selector for pagination buttons (page numbers).
 
 # Q&A 관련 선택자
 QNA_CONTAINER_SELECTOR = "div.product-qna__list-container" # Q&A 목록을 포함하는 전체 컨테이너
@@ -137,16 +137,15 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         await asyncio.to_thread(driver.get, product_url)
         await handle_alert_if_present(driver, "initial page load")
         
-        stabilization_time = random.uniform(3, 5) # 기본 안정화 시간
+        stabilization_time = random.uniform(3, 5) 
         logger.info(f"Waiting for page stabilization for {stabilization_time:.2f} seconds. URL: {product_url}")
         await asyncio.to_thread(time.sleep, stabilization_time)
         
         # 상품 기본 정보 스크래핑
         current_context = "product name scraping"
-
         try:
             product_name_element = await asyncio.to_thread(
-                WebDriverWait(driver, 20).until, # Increased timeout
+                WebDriverWait(driver, 20).until, 
                 EC.presence_of_element_located((By.CSS_SELECTOR, PRODUCT_NAME_SELECTOR))
             )
             product_details["product_name"] = product_name_element.text.strip()
@@ -164,7 +163,7 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         if PRICE_SELECTOR:
             try:
                 price_element = await asyncio.to_thread(
-                    WebDriverWait(driver, 20).until, # Increased timeout
+                    WebDriverWait(driver, 20).until, 
                     EC.presence_of_element_located((By.CSS_SELECTOR, PRICE_SELECTOR))
                 )
                 price_text_selenium = price_element.text.strip() if price_element.text else ""
@@ -182,7 +181,7 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
                         product_details["price"] = int(cleaned_price)
                         product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + "; success_price"
                     else:
-                        product_details["price"] = price_text_to_parse # Store original if not parsable
+                        product_details["price"] = price_text_to_parse 
                         logger.warning(f"Price text '{price_text_to_parse}' not parsable for {product_url}. Context: {current_context}")
                         product_details["scrape_status"]["details"] = product_details["scrape_status"].get("details", "") + f"; failure_price_parse: '{price_text_to_parse}'"
                 else:
@@ -201,7 +200,7 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         if IMAGE_SELECTOR:
             try:
                 image_element = await asyncio.to_thread(
-                    WebDriverWait(driver, 10).until, # Shorter timeout for image
+                    WebDriverWait(driver, 10).until, 
                     EC.presence_of_element_located((By.CSS_SELECTOR, IMAGE_SELECTOR))
                 )
                 product_details["image_url"] = image_element.get_attribute('src')
@@ -217,72 +216,129 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         
         # --- 리뷰 스크래핑 ---
         current_context = "reviews tab click"
-        if REVIEW_TAB_SELECTOR and REVIEW_ITEM_SELECTOR:
+        if REVIEW_TAB_SELECTOR and REVIEW_ITEM_SELECTOR and REVIEW_CONTAINER_SELECTOR:
             try:
                 review_tab_button = await asyncio.to_thread(
-                    WebDriverWait(driver, 15).until,
+                    WebDriverWait(driver, 30).until, 
                     EC.element_to_be_clickable((By.CSS_SELECTOR, REVIEW_TAB_SELECTOR))
                 )
                 await asyncio.to_thread(driver.execute_script, "arguments[0].click();", review_tab_button)
-                await asyncio.to_thread(time.sleep, random.uniform(2, 4)) # 탭 변경 후 로드 대기
+                logger.info(f"Clicked review tab for {product_url}. Waiting for reviews to load...")
+                await asyncio.to_thread(time.sleep, random.uniform(3.0, 6.0)) 
 
+                await asyncio.to_thread(
+                    WebDriverWait(driver, 25).until, 
+                    EC.presence_of_element_located((By.CSS_SELECTOR, REVIEW_CONTAINER_SELECTOR))
+                )
+                logger.info(f"Review container/items initially present for {product_url}.")
                 current_context = "reviews scraping"
-                page_count = 0
-                max_review_pages = 5 # 최대 리뷰 페이지 수 (무한 스크롤 방지)
                 
-                while page_count < max_review_pages:
-                    await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);") # 페이지 끝까지 스크롤
-                    await asyncio.to_thread(time.sleep, random.uniform(1, 2)) # 스크롤 후 로드 대기
-                    
-                    soup = BeautifulSoup(await asyncio.to_thread(lambda: driver.page_source), "html.parser")
-                    review_elements = soup.select(REVIEW_ITEM_SELECTOR)
-                    
-                    current_reviews_count = len(product_details["reviews"])
-                    for review_el in review_elements[current_reviews_count:]: # 새로 로드된 리뷰만 추가
-                        author = review_el.select_one(REVIEW_AUTHOR_SELECTOR).text.strip() if review_el.select_one(REVIEW_AUTHOR_SELECTOR) else "N/A"
-                        rating_style = review_el.select_one(REVIEW_RATING_SELECTOR)['style'] if review_el.select_one(REVIEW_RATING_SELECTOR) else "width:0%"
-                        rating = int(float(rating_style.split("width:")[1].split("%")[0]) / 20) if "width:" in rating_style else 0 # 100% = 5 stars
-                        date = review_el.select_one(REVIEW_DATE_SELECTOR).text.strip() if review_el.select_one(REVIEW_DATE_SELECTOR) else "N/A"
-                        content = review_el.select_one(REVIEW_CONTENT_SELECTOR).text.strip() if review_el.select_one(REVIEW_CONTENT_SELECTOR) else "N/A"
-                        product_details["reviews"].append({
-                            "author": author, "rating": rating, "date": date, "content": content
-                        })
-                    
-                    try: # "더보기" 또는 페이지네이션 버튼 클릭
+                max_show_more_clicks = 25 
+                
+                for i in range(max_show_more_clicks):
+                    try:
                         show_more_button = await asyncio.to_thread(
-                            WebDriverWait(driver, 5).until, # 더보기 버튼은 짧게 대기
+                            WebDriverWait(driver, 7).until, 
                             EC.element_to_be_clickable((By.CSS_SELECTOR, REVIEW_SHOW_MORE_BUTTON_SELECTOR))
                         )
                         await asyncio.to_thread(driver.execute_script, "arguments[0].click();", show_more_button)
-                        logger.info(f"Clicked review 'show more' button for {product_url}. Page {page_count + 1}")
-                        await asyncio.to_thread(time.sleep, random.uniform(2, 3))
-                    except TimeoutException: # 더보기 버튼이 없으면 페이지네이션 시도
-                        try:
-                            page_buttons = await asyncio.to_thread(lambda: driver.find_elements(By.CSS_SELECTOR, REVIEW_PAGINATION_SELECTOR))
-                            next_page_button = next((btn for btn in page_buttons if btn.text == str(page_count + 2)), None) # 다음 페이지 번호
-                            if next_page_button and next_page_button.is_enabled():
-                                await asyncio.to_thread(driver.execute_script, "arguments[0].click();", next_page_button)
-                                logger.info(f"Clicked review pagination button for page {page_count + 2} for {product_url}.")
-                                await asyncio.to_thread(time.sleep, random.uniform(2, 3))
-                            else:
-                                logger.info(f"No more review pages or 'show more' button found for {product_url}.")
-                                break 
-                        except Exception as page_e:
-                            logger.info(f"No more review pages or 'show more' (or error clicking pagination) for {product_url}: {page_e}")
-                            break 
-                    page_count += 1
-                product_details["scrape_status"]["reviews"] = f"success_found_{len(product_details['reviews'])}"
+                        logger.info(f"Clicked review 'show more' button ({i+1}/{max_show_more_clicks}) for {product_url}.")
+                        await asyncio.to_thread(time.sleep, random.uniform(2.5, 5.5)) 
+                    except TimeoutException:
+                        logger.info(f"'Show more' reviews button not found or no longer clickable after {i} clicks for {product_url}.")
+                        break
+                    except Exception as e_sm:
+                        logger.warning(f"Error clicking 'show more' reviews button for {product_url}: {e_sm}")
+                        break
+                
+                max_pagination_clicks = 15 
+                for i in range(max_pagination_clicks):
+                    try:
+                        page_buttons_non_active = await asyncio.to_thread(
+                            driver.find_elements, By.CSS_SELECTOR, f"{REVIEW_PAGINATION_SELECTOR}:not([disabled]):not(.on)"
+                        )
+                        
+                        clicked_next_page = False
+                        current_page_elements = await asyncio.to_thread(driver.find_elements, By.CSS_SELECTOR, f"{REVIEW_PAGINATION_SELECTOR}.on")
+                        current_page_num = 0
+                        if current_page_elements and current_page_elements[0].text.isdigit():
+                            current_page_num = int(current_page_elements[0].text)
+                        
+                        target_page_num = current_page_num + 1
+                        next_page_button_found = None
+
+                        for btn in page_buttons_non_active:
+                            btn_text = await asyncio.to_thread(getattr, btn, 'text')
+                            if btn_text.isdigit() and int(btn_text) == target_page_num:
+                                next_page_button_found = btn
+                                break
+                        
+                        if not next_page_button_found and page_buttons_non_active: 
+                             next_page_button_found = page_buttons_non_active[0]
+
+
+                        if next_page_button_found:
+                            button_text_for_log = await asyncio.to_thread(getattr, next_page_button_found, 'text')
+                            await asyncio.to_thread(driver.execute_script, "arguments[0].click();", next_page_button_found)
+                            logger.info(f"Clicked review pagination button for page '{button_text_for_log}' ({i+1}/{max_pagination_clicks}) for {product_url}.")
+                            await asyncio.to_thread(time.sleep, random.uniform(2.5, 5.5)) 
+                            clicked_next_page = True
+                        
+                        if not clicked_next_page:
+                            logger.info(f"No further active review pagination buttons found after {i} clicks for {product_url}.")
+                            break
+                    except Exception as e_page: 
+                        logger.warning(f"Error clicking review pagination for {product_url}: {e_page}")
+                        break
+
+                logger.info(f"Finished loading attempts for reviews on {product_url}. Parsing all loaded reviews.")
+                final_page_source = await asyncio.to_thread(getattr, driver, 'page_source')
+                soup = BeautifulSoup(final_page_source, "html.parser")
+                review_elements_final = soup.select(REVIEW_ITEM_SELECTOR)
+                
+                processed_reviews = set() 
+
+                for review_el in review_elements_final:
+                    try:
+                        author = review_el.select_one(REVIEW_AUTHOR_SELECTOR).text.strip() if review_el.select_one(REVIEW_AUTHOR_SELECTOR) else "N/A"
+                        rating_text = "0" 
+                        rating_el = review_el.select_one(REVIEW_RATING_SELECTOR)
+                        if rating_el and 'style' in rating_el.attrs:
+                            style_attr = rating_el['style']
+                            if "width:" in style_attr:
+                                rating_text = style_attr.split("width:")[1].split("%")[0].strip()
+                        rating = int(float(rating_text) / 20) if rating_text.replace('.', '', 1).isdigit() else 0
+                        
+                        date = review_el.select_one(REVIEW_DATE_SELECTOR).text.strip() if review_el.select_one(REVIEW_DATE_SELECTOR) else "N/A"
+                        content_el = review_el.select_one(REVIEW_CONTENT_SELECTOR)
+                        content = content_el.text.strip() if content_el else "N/A"
+                        
+                        review_tuple = (author, rating, date, content)
+                        if review_tuple not in processed_reviews:
+                            product_details["reviews"].append({
+                                "author": author, "rating": rating, "date": date, "content": content
+                            })
+                            processed_reviews.add(review_tuple)
+                    except (AttributeError, TypeError, ValueError, IndexError) as e_parse: 
+                        logger.warning(f"Error parsing a single review item for {product_url}. Error: {e_parse}. Item HTML (snippet): {str(review_el)[:200]}")
+                
+                if product_details["reviews"]:
+                    product_details["scrape_status"]["reviews"] = f"success_found_{len(product_details['reviews'])}"
+                else:
+                    product_details["scrape_status"]["reviews"] = "warning_no_reviews_extracted_after_load_attempts"
+
             except TimeoutException:
-                logger.warning(f"Timeout: Review tab or initial reviews not found for {product_url}. Context: {current_context}")
-                product_details["scrape_status"]["reviews"] = f"failure_timeout_or_not_found: {current_context}"
+                logger.warning(f"Timeout: Review tab or initial review container not found for {product_url} using selectors '{REVIEW_TAB_SELECTOR}' / '{REVIEW_CONTAINER_SELECTOR}'. Context: {current_context}")
+                product_details["scrape_status"]["reviews"] = f"failure_critical_timeout_or_not_found: {current_context}"
             except Exception as e:
-                logger.error(f"Error scraping reviews for {product_url}. Context: {current_context}. Error: {e}")
-                product_details["scrape_status"]["reviews"] = f"failure_exception: {type(e).__name__} in {current_context}"
+                logger.error(f"Critical error during review scraping setup for {product_url}. Context: {current_context}. Error: {e}", exc_info=True)
+                product_details["scrape_status"]["reviews"] = f"failure_critical_exception: {type(e).__name__} in {current_context}"
         else:
-            logger.warning(f"Review selectors not fully defined for {product_url}. Skipping review scraping.")
+            logger.warning(f"Review selectors (tab, item, or container) not fully defined for {product_url}. Skipping review scraping.")
             product_details["scrape_status"]["reviews"] = "skipped_selectors_undefined"
 
         # --- Q&A 스크래핑 ---
+        # TODO: Apply similar robust loading logic (increased waits, show more/pagination loop) for Q&A if needed.
         current_context = "qna tab click"
         if QNA_TAB_SELECTOR and QNA_ITEM_SELECTOR:
             try:
@@ -355,7 +411,6 @@ async def scrape_product_details_from_coupan(product_url: str) -> Dict[str, Any]
         product_details["scrape_status"]["critical"] = f"UnexpectedAlertPresentException in {current_context}"
         if driver:
             try:
-                # 예외 발생 시 알림창을 닫으려고 시도
                 alert = driver.switch_to.alert
                 alert.accept()
             except Exception as alert_e:
@@ -385,17 +440,10 @@ async def get_coupan_report_for_bono_house(keyword: str, max_products: int = 3) 
                            (Note: `search_products_on_coupan` which would use this is currently not implemented)
     """
     report_data = []
-
-    # The 'keyword' and 'max_products' parameters allow for configurable scraping.
     logger.info(f"Starting Coupang report generation for keyword: '{keyword}', max_products: {max_products}")
     
     # TODO: Implement `search_products_on_coupan(keyword, max_pages)` to get actual product URLs.
-    # This function would likely involve:
-    # 1. Navigating to Coupang's search page with the keyword.
-    # 2. Parsing the search results to extract product page URLs.
-    # 3. Handling pagination if `max_pages` > 1.
-    # product_page_urls = await search_products_on_coupan(keyword, max_pages=1) 
-    product_page_urls = [] # Using an empty list as `search_products_on_coupan` is not yet implemented.
+    product_page_urls = [] 
 
     if not product_page_urls:
         logger.warning(f"No products found for keyword: '{keyword}' via search. Returning mock data as fallback.")
@@ -404,7 +452,7 @@ async def get_coupan_report_for_bono_house(keyword: str, max_products: int = 3) 
         for i, product_url in enumerate(product_page_urls[:max_products]):
             logger.info(f"Scraping product {i+1}/{len(product_page_urls[:max_products])} for keyword '{keyword}': {product_url}")
             details = await scrape_product_details_from_coupan(product_url)
-            if details.get("product_name") and details["product_name"] != "N/A": # 유효한 상품명이 있는 경우
+            if details.get("product_name") and details["product_name"] != "N/A": 
                 report_data.append(details)
             
             if i < len(product_page_urls[:max_products]) - 1:
@@ -412,8 +460,7 @@ async def get_coupan_report_for_bono_house(keyword: str, max_products: int = 3) 
 
     if not report_data or not any(item.get("product_name") and item["product_name"] != "N/A" for item in report_data):
         logger.warning(f"No actual data scraped or data was insufficient for '{keyword}'. Using MOCK DATA as fallback.")
-        # Mock data uses a generic keyword in product names to show it's mock
-        mock_keyword_display = keyword if keyword else "보노 하우스" # Fallback for mock display if keyword is empty
+        mock_keyword_display = keyword if keyword else "보노 하우스" 
         report_data = [
             {
                 "product_name": f"[{mock_keyword_display}] 따뜻한 극세사 겨울 침구세트 (Q) (Mock)",
@@ -442,54 +489,80 @@ async def get_coupan_report_for_bono_house(keyword: str, max_products: int = 3) 
     
     return report_data
 
+async def scrape_reviews_for_url(product_url: str) -> Dict[str, Any]:
+    """
+    Scrapes only the reviews for a given Coupang product URL.
+    This function wraps `scrape_product_details_from_coupan` and extracts review-specific data.
+    """
+    logger.info(f"Attempting to scrape reviews specifically for URL: {product_url}")
+    
+    product_details = await scrape_product_details_from_coupan(product_url)
+    
+    reviews = product_details.get("reviews", [])
+    scrape_status_dict = product_details.get("scrape_status", {})
+    review_status = scrape_status_dict.get("reviews", "unknown status") 
+    
+    product_name = product_details.get("product_name", "N/A")
+    general_error = product_details.get("error")
+
+    if general_error:
+        logger.error(f"Review scraping for {product_url} (Product: {product_name}) failed due to general error: {general_error}. Review-specific status was: {review_status}")
+    elif isinstance(review_status, str) and review_status.startswith("success"):
+        if reviews:
+            logger.info(f"Successfully extracted {len(reviews)} reviews for {product_url} (Product: {product_name}). Status: {review_status}")
+        else: 
+            logger.info(f"Review scraping process for {product_url} (Product: {product_name}) was successful, but no reviews were found. Status: {review_status}")
+    elif isinstance(review_status, str) and ("warning_no_reviews_extracted" in review_status or "skipped" in review_status):
+        logger.info(f"Review scraping for {product_url} (Product: {product_name}) completed with status: {review_status}. No reviews extracted or process skipped.")
+    else: 
+        logger.warning(f"Review scraping for {product_url} (Product: {product_name}) completed with non-success status: {review_status}")
+        
+    return {
+        "product_name": product_name,
+        "reviews": reviews,
+        "status": review_status, 
+        "error": general_error   
+    }
+
 # === 테스트 코드 시작 (이전 테스트 코드가 있다면 이 블록으로 교체해주세요) ===
 if __name__ == "__main__":
     import asyncio
-    # 로깅 기본 설정 (콘솔에서 로그를 보기 위함)
-    # 파일 상단에 이미 logger = logging.getLogger(__name__) 가 정의되어 있어야 합니다.
-    # import logging 구문도 파일 상단에 있어야 합니다.
-    if not logging.getLogger().hasHandlers(): # 핸들러가 이미 설정되어 있는지 확인
+    
+    if not logging.getLogger().hasHandlers(): 
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-    async def main_test_single_item(): # 함수 이름을 변경하여 혼동 방지
-        # 테스트하고 싶은 쿠팡 상품의 전체 URL을 여기에 입력하세요.
-        # 예시 URL (이전에 제공해주신 "보노하우스" 상품 URL):
-        test_url = "https://www.coupang.com/vp/products/6956415718?itemId=17014918361&vendorItemId=84190638820&sourceType=srp_product_ads&clickEventId=864d6d00-375e-11f0-9563-917404c266cc&korePlacement=15&koreSubPlacement=1&q=%EB%B3%B4%EB%85%B8%ED%95%98%EC%9A%B0%EC%8A%A4&itemsCount=36&searchId=77307e8a548098&rank=0&searchRank=0&isAddedCart="
-        # test_url = "다른_쿠팡_상품_URL_입력" # 다른 상품으로 테스트 시 이 부분을 수정하세요.
+    async def main_test_single_item(): 
+        test_url = "https://www.coupang.com/vp/products/2287107738?itemId=3931285857&vendorItemId=71911563636" # Specific URL for this task
         
-        logger.info(f"단일 상품 스크래핑 테스트 시작. URL: {test_url}")
-        details = await scrape_product_details_from_coupan(test_url)
+        print("--- Coupang Review Scraping Test ---")
+        # Truncate URL for display if it's too long - no longer needed with this specific short URL
+        print(f"Product URL: {test_url}")
         
-        print("\n--- 스크랩된 상품 상세 정보 ---")
-        if details:
-            print(f"  상품명: {details.get('product_name', 'N/A')}")
-            print(f"  가격: {details.get('price', 'N/A')}")
-            print(f"  이미지 URL: {details.get('image_url', 'N/A')}")
+        logger.info(f"단일 상품 리뷰 스크래핑 테스트 시작. URL: {test_url}") # Keep original Korean log
+        details = await scrape_reviews_for_url(test_url)
+        
+        print(f"Product Name: {details.get('product_name', 'N/A')}")
+        print(f"Review Scraping Status: {details.get('status', 'N/A')}")
+        print(f"General Error: {details.get('error', 'None')}")
+        
+        reviews_data = details.get('reviews', [])
+        print(f"Number of Reviews Scraped: {len(reviews_data)}\n")
             
-            reviews_data = details.get('reviews', ["N/A"])
-            print(f"  리뷰 (최대 5개):")
-            if reviews_data and reviews_data != ["N/A"] and reviews_data != []:
-                for review in reviews_data:
-                    review_text = str(review)
-                    print(f"    - {review_text[:100]}{'...' if len(review_text) > 100 else ''}")
-            else:
-                print(f"    - 리뷰 정보 없음 또는 가져오지 못함 (REVIEW_SELECTOR: '{REVIEW_SELECTOR}')")
-
-            qna_data = details.get('qna', ["N/A"])
-            print(f"  Q&A (최대 5개):")
-            if qna_data and qna_data != ["N/A"] and qna_data != []:
-                for q_item in qna_data:
-                    q_text = str(q_item)
-                    print(f"    - {q_text[:100]}{'...' if len(q_text) > 100 else ''}")
-            else:
-                print(f"    - Q&A 정보 없음 또는 가져오지 못함 (QNA_SELECTOR: '{QNA_SELECTOR}')")
-            
-            print(f"  상품 URL: {details.get('product_url', 'N/A')}")
-            if details.get('error'):
-                print(f"  오류: {details.get('error')}")
+        if reviews_data:
+            print("First 5 Reviews:")
+            for i, review in enumerate(reviews_data[:5]):
+                print(f"{i+1}. Author: {review.get('author', 'N/A')}")
+                print(f"   Rating: {review.get('rating', 'N/A')}/5")
+                print(f"   Date: {review.get('date', 'N/A')}")
+                content_snippet = review.get('content', 'N/A')
+                content_snippet = content_snippet[:100] + "..." if len(content_snippet) > 100 else content_snippet
+                print(f"   Content: {content_snippet}")
+                print("   ---")
+            if len(reviews_data) > 5:
+                print(f"... and {len(reviews_data) - 5} more reviews.")
         else:
-            print("  상세 정보를 가져오지 못했습니다.")
-        print("-----------------------------")
+            print("No reviews found or extracted.")
+        print("------------------------------------")
 
     asyncio.run(main_test_single_item())
 # === 테스트 코드 끝 ===
